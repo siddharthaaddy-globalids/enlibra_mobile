@@ -16,6 +16,11 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// Override for release builds: -PllamaAbis=arm64-v8a
+val enlibraAbis: List<String> =
+    (project.findProperty("llamaAbis") as String? ?: "arm64-v8a,x86_64")
+        .split(",").map { it.trim() }
+
 android {
     namespace = "com.example.enlibra_mobile"
     compileSdk = flutter.compileSdkVersion
@@ -34,10 +39,11 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // Only arm64 is supported. A 32-bit device cannot address enough
+        // Kept in step with packages/llama_bridge/android/build.gradle.
+        // 32-bit ABIs are never built: such a device cannot address enough
         // memory to hold even the 1B model.
         ndk {
-            abiFilters.add("arm64-v8a")
+            abiFilters.addAll(enlibraAbis)
         }
     }
 

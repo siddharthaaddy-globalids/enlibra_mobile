@@ -1,0 +1,46 @@
+group = "com.enlibra.llama_bridge"
+version = "0.1.0"
+
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath("com.android.tools.build:gradle:8.7.0") }
+}
+
+rootProject.allprojects {
+    repositories { google(); mavenCentral() }
+}
+
+apply plugin: "com.android.library"
+
+def enlibraAbis = (project.findProperty("llamaAbis") ?: "arm64-v8a,x86_64").split(",").collect { it.trim() }
+
+android {
+    namespace = "com.enlibra.llama_bridge"
+    compileSdk = 35
+
+    defaultConfig {
+        minSdk = 24
+        // arm64-v8a is what ships. x86_64 is included by default so the
+        // Android Studio emulator works on an Intel/AMD host, where the
+        // system image is x86_64 and an arm64-only library simply will not
+        // load. Release builds pass -PllamaAbis=arm64-v8a to drop it, since
+        // no real device needs it and llama.cpp is large.
+        ndk { abiFilters.addAll(enlibraAbis) }
+        externalNativeBuild {
+            cmake {
+                // Release flags even in debug: an unoptimised llama.cpp is
+                // roughly an order of magnitude slower and makes the app
+                // feel broken when you are testing on a real device.
+                cppFlags "-O3", "-fvisibility=hidden"
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+}

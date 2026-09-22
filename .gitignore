@@ -59,3 +59,11 @@ ios/ExportOptions.plist
 
 # Downloaded model weights, if any end up under the project during dev.
 *.gguf
+
+# Native build output. The Apple xcframework is ~200MB and is rebuilt by
+# packages/llama_bridge/tool/build_apple_frameworks.sh; CI caches it by
+# llama.cpp submodule SHA rather than committing it.
+packages/llama_bridge/*/Frameworks/
+*.xcframework
+build/native/
+.ccache/

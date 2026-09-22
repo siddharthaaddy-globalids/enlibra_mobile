@@ -13,12 +13,19 @@ class ModelsScreen extends StatefulWidget {
     required this.downloader,
     required this.device,
     required this.onReady,
+    this.allowWithoutDownload = false,
   });
 
   final List<ModelManifest> catalog;
   final ModelDownloader downloader;
   final DeviceCapabilities device;
   final void Function(ModelManifest manifest, int contextLength) onReady;
+
+  /// Lets a model be opened without downloading it. Set only when running
+  /// against FakeLlamaEngine, which never touches the weights -- it is the
+  /// difference between the app being demoable on a fresh clone and
+  /// dead-ending at a download that needs a backend.
+  final bool allowWithoutDownload;
 
   @override
   State<ModelsScreen> createState() => _ModelsScreenState();
@@ -86,7 +93,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
     final context_ = manifest.fittableContext(usable);
     final estimate = manifest.memoryAt(context_ > 0 ? context_ : 2048);
     final progress = _progress[manifest.id];
-    final installed = _installed.contains(manifest.id);
+    final installed =
+        _installed.contains(manifest.id) || widget.allowWithoutDownload;
     final downloading =
         progress != null &&
         (progress.stage == DownloadStage.downloading ||
@@ -110,8 +118,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
                   ),
                 ),
                 if (installed)
-                  const Chip(
-                    label: Text('Installed'),
+                  Chip(
+                    label: Text(
+                      widget.allowWithoutDownload ? 'Simulated' : 'Installed',
+                    ),
                     visualDensity: VisualDensity.compact,
                   ),
               ],
@@ -173,7 +183,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
                       child: const Text('Download'),
                     ),
                   const SizedBox(width: 8),
-                  if (installed)
+                  if (installed && !widget.allowWithoutDownload)
                     TextButton(
                       onPressed: () async {
                         await widget.downloader

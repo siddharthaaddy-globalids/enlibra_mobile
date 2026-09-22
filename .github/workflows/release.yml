@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -53,11 +55,22 @@ jobs:
       - run: flutter pub get
 
       # AAB for Play, APK for direct install and side-loaded testing.
+      #
+      # ORG_GRADLE_PROJECT_* is how Gradle reads a project property from the
+      # environment; the Flutter CLI does not forward -P itself. This drops
+      # the x86_64 slice that debug builds carry for the emulator, which
+      # would otherwise roughly double the size of a llama.cpp binary.
       - name: Build app bundle
+        env:
+          ORG_GRADLE_PROJECT_llamaAbis: arm64-v8a
         run: flutter build appbundle --release --target-platform android-arm64
+        timeout-minutes: 45
 
       - name: Build APK
+        env:
+          ORG_GRADLE_PROJECT_llamaAbis: arm64-v8a
         run: flutter build apk --release --target-platform android-arm64
+        timeout-minutes: 45
 
       - name: Shred signing material
         if: always()
@@ -75,6 +88,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
@@ -110,6 +125,10 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
 
+      - name: Build llama.cpp xcframework
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        timeout-minutes: 45
+
       - run: flutter pub get
 
       - name: Build IPA
@@ -141,12 +160,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      - name: Build llama.cpp xcframework
+        if: matrix.target == 'macos'
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        timeout-minutes: 45
 
       - run: flutter pub get
 

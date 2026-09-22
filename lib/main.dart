@@ -9,6 +9,7 @@ import 'db/chat_repository.dart';
 import 'download/model_downloader.dart';
 import 'download/storage_paths.dart';
 import 'llama/fake_llama_engine.dart';
+import 'llama/llama_ffi_engine.dart';
 import 'llama/llama_engine.dart';
 import 'models/manifest_source.dart';
 import 'models/model_manifest.dart';
@@ -77,9 +78,15 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Swap for the llama.cpp FFI engine once the binding exists. Nothing else
-  // in the app changes.
-  final LlamaEngine _engine = FakeLlamaEngine();
+  // The real engine unless explicitly asked for the simulator:
+  //   flutter run --dart-define=USE_FAKE_ENGINE=true
+  // The fake needs no native build, so UI work can proceed on a machine
+  // without an NDK or Xcode toolchain.
+  static const _useFakeEngine = bool.fromEnvironment('USE_FAKE_ENGINE');
+
+  final LlamaEngine _engine = _useFakeEngine
+      ? FakeLlamaEngine()
+      : LlamaFfiEngine();
 
   late final ManifestSource _source = BackendManifestSource(
     baseUrl: Uri.parse(_apiBase),
@@ -199,6 +206,7 @@ class _HomePageState extends State<HomePage> {
       downloader: _downloader,
       device: widget.device,
       onReady: _startChat,
+      allowWithoutDownload: _useFakeEngine,
     );
   }
 }

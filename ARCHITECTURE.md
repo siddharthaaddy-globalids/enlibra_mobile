@@ -92,23 +92,109 @@ Download invariants: HTTP Range resume, SHA-256 verified before use, written
 to `.part` and atomically renamed, `.version` marker written last so a
 crash mid-download leaves the model correctly marked as not installed.
 
-## Wiring in llama.cpp
+## The llama.cpp layer
 
-`FakeLlamaEngine` implements the full `LlamaEngine` interface and simulates
-6 tok/s generation and 60 tok/s prefill, so the UI is designed against
-realistic latency. To go real:
+`third_party/llama.cpp` is a git submodule. After cloning:
 
-1. Evaluate `fllama` / `llama_cpp_dart` on pub.dev — **verify each builds
-   for Android and iOS** before committing.
-2. Fallback that always works: a thin C wrapper over `llama.h`
-   (load/tokenize/decode/sample/free) bound with `package:ffigen`.
-3. Run it on a **background isolate**. Calling `llama_decode` on the UI
-   isolate freezes the app for the entire generation.
-4. `countTokens` must use the model's real tokenizer. The fake's
-   3.6-chars-per-token heuristic is wrong by enough to blow the window.
-5. Prefer the chat template baked into the GGUF over
-   `manifest.chatTemplate`. Wrong templating is the top cause of
-   "the model outputs garbage" and it does not look like a formatting bug.
+```
+git submodule update --init --recursive
+```
+
+### Why a hand-written C bridge
+
+`packages/llama_bridge/src/llama_bridge.h` is a deliberately narrow C ABI —
+about twenty functions over opaque pointers and flat POD. Dart binds to
+*that*, never to `llama.h`.
+
+This matters more than it looks. `llama.h`'s structs change shape between
+releases; `llama_context_params` alone has a dozen fields that have come and
+gone. Any Dart mirror of those structs would keep compiling after an
+upstream change and start corrupting memory at runtime. With the bridge, a
+llama.cpp bump can break the C++ build — loud, in CI — but cannot produce a
+silently misaligned struct on a user's phone.
+
+It also means no ffigen, no libclang, and no codegen step in anyone's setup.
+
+### What the bridge does that a thinner one would not
+
+- **Prefix reuse.** `lb_generate_begin` diffs the new prompt against the
+  tokens already in the KV cache, drops only the diverging tail with
+  `llama_memory_seq_rm`, and decodes the remainder. `lb_last_cached_tokens`
+  reports how much was reused. This is what makes turn two of a conversation
+  fast instead of paying full prefill again.
+- **Chat templating via the GGUF's own template**
+  (`llama_model_chat_template`). It throws rather than guessing when a model
+  carries no template, because a wrong template produces output that looks
+  like a bad model rather than a bad prompt.
+- **Cancellation that actually interrupts.** `lb_generate_cancel` sets a
+  `std::atomic<bool>` checked inside the decode loop. See below for why the
+  usual isolate message would not work.
+
+### Threading
+
+`lib/llama/llama_worker.dart` owns the native session on a background
+isolate. Every native call blocks its thread, prefill included; on the UI
+isolate that freezes the app for the whole generation.
+
+The stop button is the subtle part. The worker is blocked inside
+`lb_generate_next` and will not read its message queue until that call
+returns — during prefill, potentially a minute. So `LlamaCanceller` holds
+the session pointer as an integer address and calls `lb_generate_cancel`
+straight from the UI isolate into the native atomic flag. Same process, so
+the address is valid; atomic, so the cross-thread write is safe.
+
+### Stop strings
+
+`StopStringFilter` holds back any suffix that could still grow into a stop
+string. A stop marker rarely arrives as one token — `<|im_end|>` may stream
+as `<|`, `im`, `_end`, `|>` — so emitting each token directly puts half a
+stop marker on screen. Correctly converted GGUFs mark these as
+end-of-generation and llama.cpp halts on its own; this covers the ones
+whose metadata is wrong.
+
+### Apple platforms
+
+CocoaPods cannot drive llama.cpp's CMake build, so iOS and macOS consume a
+prebuilt `llama.xcframework`:
+
+```
+packages/llama_bridge/tool/build_apple_frameworks.sh
+```
+
+Takes 10–20 minutes, produces ~200MB, gitignored. CI caches it keyed on the
+llama.cpp submodule SHA, so it only rebuilds when the submodule moves.
+Android, Windows and Linux build llama.cpp from source through CMake and
+need no such step.
+
+### Android ABIs
+
+Debug builds carry `arm64-v8a,x86_64`. The x86_64 slice exists only so the
+Android Studio emulator works on an Intel/AMD host, where the system image
+is x86_64 and an arm64-only library will not load at all.
+
+Release builds drop it:
+
+```
+ORG_GRADLE_PROJECT_llamaAbis=arm64-v8a flutter build appbundle --release
+```
+
+(`ORG_GRADLE_PROJECT_*` is how Gradle picks up a project property from the
+environment; the Flutter CLI does not forward `-P` itself.)
+
+No 32-bit ABI is ever built — such a device cannot address enough memory to
+hold even the 1B model.
+
+### Developing without a native toolchain
+
+```
+flutter run --dart-define=USE_FAKE_ENGINE=true
+```
+
+`FakeLlamaEngine` implements the same interface and simulates 6 tok/s
+generation with 60 tok/s prefill, so UI work does not require an NDK or
+Xcode. This flag also lets the Models screen open a model that was never
+downloaded, so the app is demoable on a fresh clone with no backend
+running.
 
 ## Before shipping
 

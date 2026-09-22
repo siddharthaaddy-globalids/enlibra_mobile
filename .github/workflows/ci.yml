@@ -46,12 +46,67 @@ jobs:
           path: coverage/lcov.info
           retention-days: 7
 
+  # Compiles the C bridge against the real llama.cpp headers. This is the
+  # only thing that proves src/llama_bridge.cpp is correct -- Dart analysis
+  # cannot see across FFI, so an API drift in llama.cpp shows up here and
+  # nowhere else. Runs on Linux because it is by far the cheapest host that
+  # exercises the same C++.
+  native:
+    name: Build native bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-native-${{ hashFiles('.gitmodules', 'packages/llama_bridge/src/*') }}
+          restore-keys: ccache-native-
+
+      - name: Configure
+        run: |
+          cmake -S packages/llama_bridge/src -B build/native -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build/native --target llama_bridge
+
+      # Dart resolves these by name at runtime. If visibility settings ever
+      # hide one, the app fails on first use with an unhelpful lookup error;
+      # catching it here is much cheaper.
+      - name: Verify exported symbols
+        run: |
+          set -euo pipefail
+          lib=$(find build/native -name 'libllama_bridge.so' | head -1)
+          echo "checking $lib"
+          for sym in lb_backend_init lb_load lb_free lb_n_ctx lb_count_tokens \
+                     lb_format_prompt lb_generate_begin lb_generate_next \
+                     lb_generate_cancel lb_last_prefill_us lb_last_prompt_tokens \
+                     lb_last_cached_tokens lb_session_save lb_session_load; do
+            if ! nm -D --defined-only "$lib" | grep -qw "$sym"; then
+              echo "::error::missing exported symbol $sym"
+              exit 1
+            fi
+          done
+          echo "all exported symbols present"
+
   android:
     name: Build Android
     runs-on: ubuntu-latest
-    needs: analyze
+    needs: [analyze, native]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -71,6 +126,7 @@ jobs:
       # models we ship anyway.
       - name: Build debug APK
         run: flutter build apk --debug --target-platform android-arm64
+        timeout-minutes: 45
 
       - uses: actions/upload-artifact@v4
         with:
@@ -81,12 +137,14 @@ jobs:
   ios:
     name: Build iOS
     runs-on: macos-14
-    needs: analyze
+    needs: [analyze, native]
     # Skipped on PRs from forks, which cannot access secrets and would
     # burn expensive macOS minutes for no signed output.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
@@ -95,6 +153,25 @@ jobs:
           architecture: arm64
           cache: true
 
+      # CocoaPods cannot drive llama.cpp's CMake build, so Apple platforms
+      # consume a prebuilt xcframework. It takes 10-20 minutes, so it is
+      # cached against the submodule SHA and only rebuilt when llama.cpp
+      # actually moves.
+      - name: Resolve llama.cpp revision
+        id: llama
+        run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: xcframework
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: xcframework-${{ steps.llama.outputs.sha }}
+
+      - name: Build xcframework
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        timeout-minutes: 45
+
       - run: flutter pub get
 
       # --no-codesign compiles and links everything without needing
@@ -102,10 +179,11 @@ jobs:
       # installable .ipa; that happens in the release workflow.
       - name: Build (unsigned)
         run: flutter build ios --release --no-codesign
+        timeout-minutes: 45
 
   desktop:
     name: Build ${{ matrix.target }}
-    needs: analyze
+    needs: [analyze, native]
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +195,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
@@ -124,7 +204,25 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Resolve llama.cpp revision
+        if: matrix.target == 'macos'
+        id: llama
+        run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        if: matrix.target == 'macos'
+        id: xcframework
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: xcframework-${{ steps.llama.outputs.sha }}
+
+      - name: Build xcframework
+        if: matrix.target == 'macos' && steps.xcframework.outputs.cache-hit != 'true'
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        timeout-minutes: 45
+
       - run: flutter pub get
 
       - name: Build
         run: flutter build ${{ matrix.target }} --release
+        timeout-minutes: 45
