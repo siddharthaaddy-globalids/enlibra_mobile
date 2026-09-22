@@ -1,0 +1,36 @@
+name: enlibra_mobile
+description: "On-device LLM chat."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # Storage
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  sqflite: ^2.3.3
+  sqflite_common_ffi: ^2.3.3   # desktop (Windows/macOS) dev harness
+
+  # Model download + integrity
+  http: ^1.2.2
+  crypto: ^3.0.5
+  convert: ^3.1.1
+
+  # Device RAM detection -> model tiering
+  system_info2: ^4.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/manifests/
