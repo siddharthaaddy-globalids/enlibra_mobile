@@ -15,6 +15,8 @@ import 'models/manifest_source.dart';
 import 'models/model_manifest.dart';
 import 'ui/chat_screen.dart';
 import 'ui/models_screen.dart';
+import 'ui/theme.dart';
+import 'ui/theme_controller.dart';
 
 /// Backend that holds the AWS credentials and issues presigned S3 URLs.
 /// Override at build time:
@@ -32,46 +34,59 @@ Future<void> main() async {
 
   await StoragePaths.init();
   final database = await AppDatabase.open();
+  final theme = await ThemeController.load();
 
   runApp(
     EnlibraApp(
       repository: ChatRepository(database.db),
       device: DeviceCapabilities.detect(),
+      theme: theme,
     ),
   );
 }
 
 class EnlibraApp extends StatelessWidget {
-  const EnlibraApp({super.key, required this.repository, required this.device});
+  const EnlibraApp({
+    super.key,
+    required this.repository,
+    required this.device,
+    required this.theme,
+  });
 
   final ChatRepository repository;
   final DeviceCapabilities device;
+  final ThemeController theme;
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Enlibra',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
+    // Rebuilds the whole app when the mode changes, which is cheap and
+    // avoids threading the controller through every widget that only wants
+    // to read the current brightness.
+    return ListenableBuilder(
+      listenable: theme,
+      builder: (context, _) => MaterialApp(
+        title: 'Enlibra',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: theme.mode,
+        home: HomePage(repository: repository, device: device, theme: theme),
       ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.indigo,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
-      home: HomePage(repository: repository, device: device),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.repository, required this.device});
+  const HomePage({
+    super.key,
+    required this.repository,
+    required this.device,
+    required this.theme,
+  });
 
   final ChatRepository repository;
   final DeviceCapabilities device;
+  final ThemeController theme;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -132,6 +147,7 @@ class _HomePageState extends State<HomePage> {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChatScreen(
+          themeController: widget.theme,
           controller: ChatController(
             engine: _engine,
             repository: widget.repository,
@@ -206,6 +222,7 @@ class _HomePageState extends State<HomePage> {
       downloader: _downloader,
       device: widget.device,
       onReady: _startChat,
+      themeController: widget.theme,
       allowWithoutDownload: _useFakeEngine,
     );
   }

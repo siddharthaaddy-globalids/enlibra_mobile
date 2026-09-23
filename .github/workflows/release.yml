@@ -56,19 +56,14 @@ jobs:
 
       # AAB for Play, APK for direct install and side-loaded testing.
       #
-      # ORG_GRADLE_PROJECT_* is how Gradle reads a project property from the
-      # environment; the Flutter CLI does not forward -P itself. This drops
-      # the x86_64 slice that debug builds carry for the emulator, which
-      # would otherwise roughly double the size of a llama.cpp binary.
+      # --target-platform governs the native bridge too: both Gradle modules
+      # read Flutter's own -Ptarget-platform, so the emulator's x86_64 slice
+      # is dropped here without a second flag that could drift out of step.
       - name: Build app bundle
-        env:
-          ORG_GRADLE_PROJECT_llamaAbis: arm64-v8a
         run: flutter build appbundle --release --target-platform android-arm64
         timeout-minutes: 45
 
       - name: Build APK
-        env:
-          ORG_GRADLE_PROJECT_llamaAbis: arm64-v8a
         run: flutter build apk --release --target-platform android-arm64
         timeout-minutes: 45
 

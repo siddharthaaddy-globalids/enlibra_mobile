@@ -71,8 +71,10 @@ lb_context* lb_load(const lb_model_params* params, char* err, int32_t err_len) {
   mparams.n_gpu_layers = params->n_gpu_layers;
   // mmap lets the OS evict weight pages under pressure instead of killing
   // the process. On a memory-constrained phone this is not an optimisation,
-  // it is what keeps the app alive.
-  mparams.use_mmap = params->use_mmap;
+  // it is what keeps the app alive, so never mlock: pinning two gigabytes
+  // of weights is the fastest way to get jetsammed.
+  mparams.load_mode =
+      params->use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
 
   llama_model* model = llama_model_load_from_file(params->model_path, mparams);
   if (model == nullptr) {

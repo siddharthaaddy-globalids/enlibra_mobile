@@ -168,21 +168,35 @@ need no such step.
 
 ### Android ABIs
 
-Debug builds carry `arm64-v8a,x86_64`. The x86_64 slice exists only so the
-Android Studio emulator works on an Intel/AMD host, where the system image
-is x86_64 and an arm64-only library will not load at all.
-
-Release builds drop it:
+Both Gradle modules derive their ABI list from Flutter's own
+`-Ptarget-platform`, so one flag governs Flutter's libraries and the native
+bridge together:
 
 ```
-ORG_GRADLE_PROJECT_llamaAbis=arm64-v8a flutter build appbundle --release
+flutter build appbundle --release --target-platform android-arm64
 ```
 
-(`ORG_GRADLE_PROJECT_*` is how Gradle picks up a project property from the
-environment; the Flutter CLI does not forward `-P` itself.)
+With no flag, the default is `arm64-v8a,x86_64`. The x86_64 slice exists
+only so the Android Studio emulator works on an Intel/AMD host, where the
+system image is x86_64 and an arm64-only library will not load at all.
 
 No 32-bit ABI is ever built — such a device cannot address enough memory to
 hold even the 1B model.
+
+Verified: a debug APK carries `lib/x86_64/libllama_bridge.so` at 4.58MB, and
+an arm64 build produces 4.24MB.
+
+### Windows toolchain notes
+
+Two things bite on Windows and neither is a project problem:
+
+- The Gradle wrapper can leave a zero-byte `.part` file after a failed
+  download, and then times out on every later build. Clear
+  `~/.gradle/wrapper/dists/<version>` and let it re-fetch.
+- The `-all` Gradle distribution ships Kotlin DSL docs whose generated
+  filenames exceed the 260-character `MAX_PATH` limit, so extraction fails.
+  Switching `distributionUrl` to `-bin` avoids this entirely and costs
+  nothing but IDE autocomplete in `build.gradle.kts`.
 
 ### Developing without a native toolchain
 

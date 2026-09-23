@@ -12,7 +12,21 @@ rootProject.allprojects {
 
 apply plugin: "com.android.library"
 
-def enlibraAbis = (project.findProperty("llamaAbis") ?: "arm64-v8a,x86_64").split(",").collect { it.trim() }
+// ABIs to build llama.cpp for.
+//
+// Prefer Flutter's own -Ptarget-platform, which `flutter build --target-platform`
+// already passes: that way one flag controls Flutter's libs and ours, and they
+// cannot drift apart. Falls back to -PllamaAbis, then to a default that
+// includes x86_64 so the emulator works on an Intel/AMD host.
+def enlibraAbis = {
+    def map = ["android-arm64": "arm64-v8a", "android-x64": "x86_64"]
+    def targets = project.findProperty("target-platform")
+    if (targets) {
+        def abis = targets.split(",").collect { map[it.trim()] }.findAll { it != null }
+        if (abis) return abis
+    }
+    return (project.findProperty("llamaAbis") ?: "arm64-v8a,x86_64").split(",").collect { it.trim() }
+}()
 
 android {
     namespace = "com.enlibra.llama_bridge"

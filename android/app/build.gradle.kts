@@ -16,10 +16,17 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
-// Override for release builds: -PllamaAbis=arm64-v8a
-val enlibraAbis: List<String> =
-    (project.findProperty("llamaAbis") as String? ?: "arm64-v8a,x86_64")
+// ABIs to build llama.cpp for. Prefers Flutter's own -Ptarget-platform so a
+// single `flutter build --target-platform` flag governs both Flutter's
+// libraries and ours; see packages/llama_bridge/android/build.gradle.
+val enlibraAbis: List<String> = run {
+    val map = mapOf("android-arm64" to "arm64-v8a", "android-x64" to "x86_64")
+    val targets = project.findProperty("target-platform") as String?
+    val fromFlutter = targets?.split(",")?.mapNotNull { map[it.trim()] } ?: emptyList()
+    if (fromFlutter.isNotEmpty()) fromFlutter
+    else (project.findProperty("llamaAbis") as String? ?: "arm64-v8a,x86_64")
         .split(",").map { it.trim() }
+}
 
 android {
     namespace = "com.example.enlibra_mobile"
