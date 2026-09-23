@@ -136,7 +136,38 @@ void main() {
       final notGguf = Uint8List.fromList(utf8.encode('<!doctype html><html>'));
       expect(
         () => GgufHeader.parse(notGguf),
-        throwsA(isA<GgufFormatException>()),
+        throwsA(
+          isA<GgufFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('web page'),
+          ),
+        ),
+      );
+    });
+
+    test('names safetensors specifically, since that is what gets pasted', () {
+      // The `quantized/` output of a training run is a Hugging Face
+      // checkpoint. Telling the user "bad magic" would leave them guessing at
+      // what is a one-line conversion step.
+      final header = utf8.encode('{"__metadata__":{"format":"pt"}}');
+      final file = BytesBuilder()
+        ..add(
+          (ByteData(
+            8,
+          )..setUint64(0, header.length, Endian.little)).buffer.asUint8List(),
+        )
+        ..add(header);
+
+      expect(
+        () => GgufHeader.parse(file.takeBytes()),
+        throwsA(
+          isA<GgufFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('safetensors'),
+          ),
+        ),
       );
     });
 

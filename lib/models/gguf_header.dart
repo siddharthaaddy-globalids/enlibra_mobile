@@ -132,7 +132,7 @@ class GgufHeader {
     final r = _Reader(bytes);
 
     if (r.u32() != 0x46554747) {
-      throw GgufFormatException('not a GGUF file (bad magic)');
+      throw GgufFormatException(_describeNonGguf(bytes));
     }
     final version = r.u32();
     if (version < 2 || version > 3) {
@@ -216,6 +216,43 @@ class GgufHeader {
 }
 
 int? _int(Object? value) => value is int ? value : null;
+
+/// Says what the file actually is, when it is not a GGUF.
+///
+/// "bad magic" is true and useless. The two things that really get pasted here
+/// are a Hugging Face checkpoint -- the `quantized/` output of a training run
+/// is `model.safetensors`, not a GGUF -- and an S3 error document, which
+/// arrives with a 200 when the URL is a listing rather than an object.
+String _describeNonGguf(Uint8List bytes) {
+  if (bytes.length >= 9) {
+    // safetensors: u64 little-endian header length, then that many bytes of
+    // JSON. The '{' at offset 8 is the giveaway.
+    final lo = bytes[0] | bytes[1] << 8 | bytes[2] << 16 | bytes[3] << 24;
+    final hi = bytes[4] | bytes[5] << 8 | bytes[6] << 16 | bytes[7] << 24;
+    if (hi == 0 && lo > 0 && lo < (1 << 30) && bytes[8] == 0x7b) {
+      return 'this is a safetensors checkpoint, not a GGUF. llama.cpp cannot '
+          'load it -- it has to be converted with convert_hf_to_gguf.py and '
+          'quantised first. See scripts/README.md.';
+    }
+  }
+
+  final head = String.fromCharCodes(
+    bytes.take(64).where((b) => b >= 0x20 && b < 0x7f),
+  ).trimLeft();
+
+  if (head.startsWith('<')) {
+    return 'that URL returned a web page or an S3 error document, not a '
+        'model file.';
+  }
+  if (head.startsWith('{') || head.startsWith('[')) {
+    return 'that URL returned JSON, not a model file. If it is a model '
+        'source file, paste its contents rather than a link to it.';
+  }
+  if (head.startsWith('PK')) {
+    return 'that is a zip archive (a PyTorch .bin, most likely), not a GGUF.';
+  }
+  return 'not a GGUF file -- the first bytes are not the GGUF magic number.';
+}
 
 /// Cursor over the prefix we have, which asks for more rather than reading
 /// past the end.

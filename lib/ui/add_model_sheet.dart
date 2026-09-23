@@ -58,6 +58,11 @@ class _AddModelSheetState extends State<AddModelSheet> {
   ModelManifest? _candidate;
   DateTime? _expiry;
 
+  /// Null when the pasted text was a complete manifest and nothing was
+  /// probed, so the question was never asked. False only when a real GGUF was
+  /// read and found to have no template.
+  bool? _hasChatTemplate;
+
   @override
   void dispose() {
     _linkController.dispose();
@@ -79,6 +84,7 @@ class _AddModelSheetState extends State<AddModelSheet> {
       _checking = true;
       _error = null;
       _candidate = null;
+      _hasChatTemplate = null;
     });
 
     try {
@@ -107,6 +113,7 @@ class _AddModelSheetState extends State<AddModelSheet> {
 
     final weights = link.weights;
     final probed = await _probe.probe(weights.url);
+    _hasChatTemplate = probed.hasChatTemplate;
 
     final id = link.id ?? ModelLink.idFromUrl(weights.url);
     final manifest = probed.toManifest(
@@ -247,6 +254,7 @@ class _AddModelSheetState extends State<AddModelSheet> {
                     device: widget.device,
                     expiry: _expiry,
                     isUpdate: widget.existingIds.contains(_candidate!.id),
+                    hasChatTemplate: _hasChatTemplate,
                     nameController: _nameController,
                   ),
                   const SizedBox(height: 16),
@@ -328,6 +336,7 @@ class _Preview extends StatelessWidget {
     required this.device,
     required this.expiry,
     required this.isUpdate,
+    required this.hasChatTemplate,
     required this.nameController,
   });
 
@@ -335,6 +344,10 @@ class _Preview extends StatelessWidget {
   final DeviceCapabilities device;
   final DateTime? expiry;
   final bool isUpdate;
+
+  /// See [ProbedGguf.hasChatTemplate]. Null means it was not determined.
+  final bool? hasChatTemplate;
+
   final TextEditingController nameController;
 
   @override
@@ -391,6 +404,43 @@ class _Preview extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall
                 ?.copyWith(color: fits ? t.textMuted : AppColors.danger),
           ),
+          // Loud, and above the softer notes: this one means the model will
+          // download and load and then refuse to hold a conversation, which
+          // is not something to find out after 2.3GB.
+          if (hasChatTemplate == false) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: AppColors.danger.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: AppColors.danger.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 15,
+                    color: AppColors.danger,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      'No chat template inside this GGUF. It will download '
+                      'and load, but chat will fail: the engine uses the '
+                      "model's own template and will not guess one. "
+                      'Re-convert with the template embedded.',
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: AppColors.danger),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           if (isUpdate) ...[
             const SizedBox(height: 8),
             _Note(

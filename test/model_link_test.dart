@@ -7,7 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 /// directory, plus a SigV4 query.
 const _key =
     'dss/dev/runs/20260818_215840_neuroscience_8f33eb7cf609/outputs/gkd/runs/'
-    'enlibraQ3-14B-to-4B-2026-09-22-1209/quantized/model-q4_k_m.gguf';
+    'enlibraQ3-14B-to-4B-2026-09-22-1209/gguf/'
+    'enlibraQ3-14B-to-4B-2026-09-22-1209-Q4_K_M.gguf';
 
 Uri _presigned({String signedAt = '20260923T120000Z', int expiresIn = 604800}) {
   return Uri.parse(
@@ -31,7 +32,7 @@ void main() {
 
     test('tolerates a URL copied with surrounding quotes', () {
       final link = ModelLink.parse('  "${_presigned()}"  ');
-      expect(link.weights.url.path, endsWith('model-q4_k_m.gguf'));
+      expect(link.weights.url.path, endsWith('-Q4_K_M.gguf'));
     });
 
     test('rejects an s3:// address with advice rather than a bare failure', () {
@@ -57,13 +58,13 @@ void main() {
         'version': 1,
         'id': 'enlibraq3-14b-to-4b-2026-09-22-1209',
         'displayName': 'enlibraQ3-14B-to-4B-2026-09-22-1209',
-        'source': 's3://enlibra/dss/dev/runs/.../quantized/',
+        'source': 's3://enlibra/dss/dev/runs/.../gguf/',
         'expiresAt': '2026-09-30T12:00:00.000Z',
         'files': [
           {
             'role': 'weights',
-            'fileName': 'model-q4_k_m.gguf',
-            'sizeBytes': 2684354560,
+            'fileName': 'enlibraQ3-14B-to-4B-2026-09-22-1209-Q4_K_M.gguf',
+            'sizeBytes': 2469606195,
             'sha256': 'A' * 64,
             'url': _presigned().toString(),
           },
@@ -73,7 +74,7 @@ void main() {
       final link = ModelLink.parse(json);
       expect(link.id, 'enlibraq3-14b-to-4b-2026-09-22-1209');
       expect(link.source, startsWith('s3://enlibra/'));
-      expect(link.weights.sizeBytes, 2684354560);
+      expect(link.weights.sizeBytes, 2469606195);
       expect(link.weights.sha256, 'a' * 64); // normalised
     });
 
@@ -141,6 +142,29 @@ void main() {
         ModelLink.idFromUrl(_presigned(signedAt: '20260923T120000Z')),
         ModelLink.idFromUrl(_presigned(signedAt: '20260924T090000Z')),
       );
+    });
+
+    test('ignores a format directory, so gguf/ and quantized/ agree', () {
+      // The same build is published twice: the checkpoint under quantized/
+      // and the converted weights under gguf/. Neither directory names the
+      // model, and taking the tail would call this one "gguf".
+      const run =
+          'dss/dev/runs/20260818_215840_neuroscience_8f33eb7cf609/outputs/gkd/'
+          'runs/enlibraQ3-14B-to-4B-2026-09-22-1209';
+
+      final fromGguf = Uri.parse(
+        'https://enlibra.s3.us-east-1.amazonaws.com/$run/gguf/'
+        'enlibraQ3-14B-to-4B-2026-09-22-1209-Q4_K_M.gguf',
+      );
+      final fromQuantized = Uri.parse(
+        'https://enlibra.s3.us-east-1.amazonaws.com/$run/quantized/model.gguf',
+      );
+
+      expect(
+        ModelLink.idFromUrl(fromGguf),
+        'enlibraq3-14b-to-4b-2026-09-22-1209',
+      );
+      expect(ModelLink.idFromUrl(fromQuantized), ModelLink.idFromUrl(fromGguf));
     });
 
     test('falls back to the file name when there is no directory to use', () {

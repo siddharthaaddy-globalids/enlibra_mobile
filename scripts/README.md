@@ -56,17 +56,24 @@ well-formed URL.
 ### Use
 
 ```powershell
-node presign-model.mjs s3://enlibra/dss/dev/runs/20260818_215840_neuroscience_8f33eb7cf609/outputs/gkd/runs/enlibraQ3-14B-to-4B-2026-09-22-1209/quantized/
+node presign-model.mjs s3://enlibra/dss/dev/runs/20260818_215840_neuroscience_8f33eb7cf609/outputs/gkd/runs/enlibraQ3-14B-to-4B-2026-09-22-1209/gguf/
 ```
 
-It lists the prefix, signs every `.gguf` in it, and prints the URLs.
+It lists the prefix, signs every `.gguf` in it, and prints the URLs. The
+`chat_template.jinja` and `kd-gguf.json` beside it are listed but not signed —
+the app needs neither, since llama.cpp reads the template and the tokenizer out
+of the GGUF itself.
+
+Point it at `gguf/`, not `quantized/`. The latter is the Hugging Face
+checkpoint the run produced (`model.safetensors`), which the app cannot load;
+the script refuses it and says so.
 
 If the identity has `s3:GetObject` but not `s3:ListBucket` — a reasonable way to
 scope a read-only key — listing fails and the script says so. Pass the full
 object key instead; signing needs no permission:
 
 ```powershell
-node presign-model.mjs s3://enlibra/…/quantized/model-q4_k_m.gguf
+node presign-model.mjs s3://enlibra/…/gguf/enlibraQ3-14B-to-4B-2026-09-22-1209-Q4_K_M.gguf
 ```
 
 Options:
@@ -102,13 +109,13 @@ file, or when you want the checksum carried along:
   "version": 1,
   "id": "enlibraq3-14b-to-4b-2026-09-22-1209",
   "displayName": "enlibraQ3-14B-to-4B-2026-09-22-1209",
-  "source": "s3://enlibra/dss/dev/runs/…/quantized/",
+  "source": "s3://enlibra/dss/dev/runs/…/enlibraQ3-14B-to-4B-2026-09-22-1209/gguf/",
   "expiresAt": "2026-09-30T07:57:24.486Z",
   "files": [
     {
       "role": "weights",
-      "fileName": "model-q4_k_m.gguf",
-      "sizeBytes": 2684354560,
+      "fileName": "enlibraQ3-14B-to-4B-2026-09-22-1209-Q4_K_M.gguf",
+      "sizeBytes": 2469606195,
       "sha256": null,
       "url": "https://enlibra.s3.us-east-1.amazonaws.com/…"
     }
@@ -117,6 +124,11 @@ file, or when you want the checksum carried along:
 ```
 
 The whole file can be pasted into the same field.
+
+Note the `id`: it comes from the **run** directory, not from `gguf/` or
+`quantized/`. Those name a format, not a model, and the same build is published
+under both — so the id ignores them. That is what makes a re-pasted URL update
+the model in place rather than install a second copy.
 
 ### Expiry
 
@@ -142,6 +154,61 @@ corrupted one; a corrupt GGUF of the right length fails later, inside
 llama.cpp. `--checksum` closes that gap at the cost of streaming the whole
 object past a hash on your machine first — for 2.5GB, the slowest thing the
 script does.
+
+## Converting a checkpoint to GGUF
+
+**llama.cpp loads GGUF and nothing else.** A training run's `quantized/`
+directory is a Hugging Face checkpoint, not a GGUF:
+
+```
+chat_template.jinja   config.json      generation_config.json
+kd-quant.json         recipe.yaml      tokenizer.json   tokenizer_config.json
+model.safetensors     2.5 GB           ← weights, unloadable by the app
+```
+
+`presign-model.mjs` refuses to sign these rather than handing over a URL that
+downloads 2.5GB and then fails on the phone. The app refuses them too, by name,
+if one reaches it anyway.
+
+Conversion happens once, on a machine that has the weights — most sensibly as an
+extra step in the DSS pipeline writing a `gguf/` directory beside `quantized/`,
+so this stops being a manual chore:
+
+```bash
+# 1. If the checkpoint is already quantised (kd-quant.json / recipe.yaml
+#    indicate llm-compressor), decompress to bf16 first -- convert_hf_to_gguf.py
+#    reads full-precision tensors, not compressed-tensors ones.
+python -c "
+from transformers import AutoModelForCausalLM, AutoTokenizer
+m = AutoModelForCausalLM.from_pretrained('./quantized', torch_dtype='bfloat16')
+m.save_pretrained('./dense'); AutoTokenizer.from_pretrained('./quantized').save_pretrained('./dense')"
+
+# 2. Checkpoint -> GGUF. Still full precision, so still large.
+python llama.cpp/convert_hf_to_gguf.py ./dense \
+  --outfile model-f16.gguf --outtype f16
+
+# 3. GGUF -> the quantisation the phone actually runs.
+llama-quantize model-f16.gguf model-q4_k_m.gguf Q4_K_M
+
+# 4. Upload to a gguf/ directory beside quantized/, and sign that.
+aws s3 cp model-q4_k_m.gguf \
+  s3://enlibra/…/runs/<model-run>/gguf/<model-run>-Q4_K_M.gguf
+node presign-model.mjs s3://enlibra/…/runs/<model-run>/gguf/
+```
+
+**Embed the chat template.** `convert_hf_to_gguf.py` picks it up from
+`tokenizer_config.json`; a standalone `chat_template.jinja` — the newer
+Transformers convention — is not read by every converter version. If it does not
+make it in, the model downloads and loads and then cannot hold a conversation:
+the bridge asks llama.cpp for the model's own template and fails the request
+rather than guessing a format that would produce subtly wrong output. The app
+checks for this during **Check link** and warns before the download, but the fix
+is at conversion time (`--chat-template-file`, or move the template into
+`tokenizer_config.json` first).
+
+For a 4B model, expect ~8GB at step 2 and ~2.4GB after step 3. The chat template
+travels inside the GGUF, so `chat_template.jinja` does not need uploading — and
+neither does the tokenizer, which llama.cpp also reads out of the GGUF.
 
 ## make-icons.mjs — launcher icons from the mark
 

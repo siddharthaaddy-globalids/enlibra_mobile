@@ -26,6 +26,22 @@ class ProbedGguf {
   final int sizeBytes;
   final GgufHeader header;
 
+  /// Whether the file carries the chat template inside it.
+  ///
+  /// Worth checking before the download rather than after: the bridge asks
+  /// llama.cpp for the model's own template and **fails the request** when
+  /// there is none, rather than guessing a format and producing subtly wrong
+  /// output (`lb_format_prompt` in llama_bridge.cpp). So a GGUF converted
+  /// without its template downloads fine, loads fine, and then cannot hold a
+  /// conversation -- which is a miserable thing to discover after 2.3GB.
+  ///
+  /// A `chat_template.jinja` sitting beside the GGUF in the bucket is a hint
+  /// that it was *not* embedded: converters pick the template up from
+  /// `tokenizer_config.json`, and a standalone jinja file is the newer
+  /// Transformers convention that older ones do not read.
+  bool get hasChatTemplate =>
+      header.chatTemplate != null && header.chatTemplate!.isNotEmpty;
+
   /// Builds the manifest the rest of the app already knows how to consume.
   ///
   /// [id] is supplied by the caller rather than derived here, because it

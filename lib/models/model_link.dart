@@ -208,6 +208,25 @@ class ModelLink {
     );
   }
 
+  /// Directory names that say what a thing is rather than which thing it is.
+  ///
+  /// A run writes `.../<model-run>/quantized/` and `.../<model-run>/gguf/` for
+  /// the same model in two formats, so the tail directory never names it --
+  /// the run directory does. Kept in step with `GENERIC_SEGMENTS` in
+  /// `scripts/presign-model.mjs`, which derives the same id when it writes a
+  /// source file; a mismatch would mean the two disagree about whether a
+  /// pasted link is an update or a new model.
+  static const genericPathSegments = <String>{
+    'gguf',
+    'quantized',
+    'outputs',
+    'runs',
+    'models',
+    'weights',
+    'artifacts',
+    'export',
+  };
+
   /// A model id derived from a URL, used when the pasted text carries none.
   ///
   /// Built from the S3 key's directory structure rather than the file name,
@@ -221,9 +240,9 @@ class ModelLink {
     if (segments.isEmpty) return 'pasted-model';
 
     final fileName = segments.removeLast();
-    // .../<model-run>/quantized/model.gguf -> <model-run>
+    // .../<model-run>/gguf/model.gguf -> <model-run>
     final meaningful = segments.reversed
-        .where((s) => s != 'quantized' && s != 'outputs' && s != 'runs')
+        .where((s) => !genericPathSegments.contains(s.toLowerCase()))
         .take(1)
         .toList();
     final base = meaningful.isNotEmpty

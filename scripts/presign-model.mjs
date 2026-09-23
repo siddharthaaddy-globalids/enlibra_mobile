@@ -11,7 +11,7 @@
  * carries a Cognito login.
  *
  * Usage:
- *   node presign-model.mjs s3://enlibra/dss/dev/runs/<run>/outputs/gkd/runs/<model>/quantized/
+ *   node presign-model.mjs s3://enlibra/dss/dev/runs/<run>/outputs/gkd/runs/<model>/gguf/
  *
  * Options:
  *   --profile <name>     AWS profile to sign with (default: standard chain)
@@ -55,8 +55,18 @@ if (major < 20) {
 
 const MAX_EXPIRES = 604800; // SigV4 ceiling: 7 days.
 
-/** Files that are weights rather than tokenizer/config side-cars. */
+/** The only weights format the app can load: llama.cpp reads GGUF and nothing else. */
 const WEIGHT_EXTENSIONS = [".gguf"];
+
+/**
+ * Formats that are weights but not *loadable* weights. A run's `quantized/`
+ * directory holds a Hugging Face checkpoint -- `model.safetensors` plus
+ * config and tokenizer JSON -- which is what the quantisation pipeline
+ * produces and what llama.cpp cannot open. Signing it would hand over a URL
+ * that downloads 2.5GB and then fails on the phone, so it is refused here
+ * with the conversion step spelled out instead.
+ */
+const UNUSABLE_EXTENSIONS = [".safetensors", ".bin", ".pt", ".pth"];
 
 function parseArgs(argv) {
   const opts = {
@@ -217,6 +227,24 @@ function humanBytes(n) {
 }
 
 /**
+ * Directory names that say what a thing is rather than which thing it is.
+ * `.../runs/<model-run>/gguf/` and `.../runs/<model-run>/quantized/` are the
+ * same model in two formats, so neither tail names it -- the run directory
+ * does. Must stay in step with `idFromUrl` in lib/models/model_link.dart,
+ * which derives the same id on the app side; both have tests pinning it.
+ */
+const GENERIC_SEGMENTS = new Set([
+  "gguf",
+  "quantized",
+  "outputs",
+  "runs",
+  "models",
+  "weights",
+  "artifacts",
+  "export",
+]);
+
+/**
  * A model id that stays stable across re-signings, so a re-pasted URL updates
  * the existing model on the phone instead of installing a second copy of a
  * 2.5GB file. The run directory name (`enlibraQ3-14B-to-4B-2026-09-22-1209`)
@@ -224,12 +252,9 @@ function humanBytes(n) {
  */
 function deriveIdentity(bucket, prefix, fileName) {
   const segments = prefix.split("/").filter(Boolean);
-  // .../runs/<model-run>/quantized/  ->  <model-run>
-  const tail = segments[segments.length - 1];
-  const parent = segments[segments.length - 2];
-  const name = (tail === "quantized" || tail === "outputs") && parent
-    ? parent
-    : tail ?? fileName.replace(/\.gguf$/i, "");
+  const name =
+    [...segments].reverse().find((s) => !GENERIC_SEGMENTS.has(s)) ??
+    fileName.replace(/\.gguf$/i, "");
   return {
     id: name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"),
     displayName: name,
@@ -319,6 +344,26 @@ async function main() {
   const weights = objects.filter((o) =>
     WEIGHT_EXTENSIONS.some((ext) => o.key.toLowerCase().endsWith(ext))
   );
+
+  if (weights.length === 0) {
+    const unusable = objects.filter((o) =>
+      UNUSABLE_EXTENSIONS.some((ext) => o.key.toLowerCase().endsWith(ext))
+    );
+    if (unusable.length > 0) {
+      fail(
+        "no .gguf here -- this is a Hugging Face checkpoint (" +
+          unusable.map((o) => o.key.split("/").pop()).join(", ") + ").\n" +
+          "  llama.cpp cannot load it, so the app cannot either. It has to be\n" +
+          "  converted first, on a machine that has the weights:\n" +
+          "    python llama.cpp/convert_hf_to_gguf.py <dir> --outfile model-f16.gguf --outtype f16\n" +
+          "    llama-quantize model-f16.gguf model-q4_k_m.gguf Q4_K_M\n" +
+          "  then upload the .gguf and sign that. A checkpoint already quantised\n" +
+          "  by llm-compressor has to be decompressed to bf16 before step one.\n" +
+          "  See scripts/README.md -> 'Converting a checkpoint to GGUF'."
+      );
+    }
+  }
+
   const toSign = weights.length > 0 ? weights : objects;
   const skipped = objects.filter((o) => !toSign.includes(o));
 
