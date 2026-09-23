@@ -11,7 +11,10 @@
       "kvCacheType": "q8_0",
       "contextLength": 4096,
       "chatTemplate": null,
-      "stopStrings": ["<|im_end|>", "<|eot_id|>"],
+      "stopStrings": [
+        "<|im_end|>",
+        "<|eot_id|>"
+      ],
       "shape": {
         "paramCount": 1235814400,
         "layerCount": 16,
@@ -38,13 +41,16 @@
       "schemaVersion": 1,
       "id": "enlibra-chat-3b",
       "displayName": "Enlibra Chat 3B",
-      "description": "Higher quality. Needs 8GB RAM or more.",
+      "description": "Higher quality. Best on 8GB devices.",
       "version": "2026.09.1",
       "quantization": "Q4_K_M",
       "kvCacheType": "q8_0",
       "contextLength": 4096,
       "chatTemplate": null,
-      "stopStrings": ["<|im_end|>", "<|eot_id|>"],
+      "stopStrings": [
+        "<|im_end|>",
+        "<|eot_id|>"
+      ],
       "shape": {
         "paramCount": 3212749824,
         "layerCount": 28,

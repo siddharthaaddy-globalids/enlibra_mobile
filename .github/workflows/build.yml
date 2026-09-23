@@ -1,0 +1,289 @@
+name: Build
+
+# One manual pipeline for every installable artifact. Pick a platform (or
+# "all") and a mode; each job is skipped unless selected, so a Windows build
+# never spins up a macOS runner you get billed 10x for.
+#
+# ci.yml stays separate: that one verifies changes on push, this one hands
+# you something to install.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: What to build
+        type: choice
+        default: android
+        options: [android, windows, macos, ios, all]
+      build_mode:
+        description: Build mode
+        type: choice
+        default: release
+        options: [release, debug]
+      android_abi:
+        description: Android ABI (ignored for other platforms)
+        type: choice
+        default: android-arm64
+        options: [android-arm64, android-x64]
+      fake_engine:
+        description: >-
+          Simulated engine — runs with no backend and no model file
+        type: boolean
+        default: false
+
+env:
+  FLUTTER_VERSION: 3.47.5
+
+jobs:
+  android:
+    if: contains(fromJSON('["android","all"]'), inputs.platform)
+    name: Android (${{ inputs.android_abi }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # llama.cpp compiles from source under the NDK and dominates runtime.
+      # Keyed on the submodule SHA plus the bridge sources so a Dart-only
+      # change reuses the objects.
+      - name: Resolve llama.cpp revision
+        id: llama
+        run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: packages/llama_bridge/android/.cxx
+          key: cxx-${{ inputs.android_abi }}-${{ steps.llama.outputs.sha }}-${{ hashFiles('packages/llama_bridge/src/*') }}
+          restore-keys: cxx-${{ inputs.android_abi }}-${{ steps.llama.outputs.sha }}-
+
+      - run: flutter pub get
+
+      - name: Build APK
+        run: |
+          flutter build apk --${{ inputs.build_mode }} \
+            --target-platform ${{ inputs.android_abi }} \
+            ${{ inputs.fake_engine && '--dart-define=USE_FAKE_ENGINE=true' || '' }}
+
+      - name: Stage
+        id: stage
+        run: |
+          set -euo pipefail
+          src=$(find build/app/outputs/flutter-apk -name '*.apk' ! -name '*.sha1' | head -1)
+          name="enlibra-android-${{ inputs.build_mode }}-$(git rev-parse --short HEAD).apk"
+          mkdir -p dist && cp "$src" "dist/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Android"
+            echo "\`$name\` — $(du -h "dist/$name" | cut -f1)"
+            echo '```'
+            unzip -l "dist/$name" | grep '\.so$' || true
+            echo '```'
+            echo '> Debug-signed. Sideload only; not uploadable to Play.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: dist/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  windows:
+    if: contains(fromJSON('["windows","all"]'), inputs.platform)
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build
+        run: >
+          flutter build windows --${{ inputs.build_mode }}
+          ${{ inputs.fake_engine && '--dart-define=USE_FAKE_ENGINE=true' || '' }}
+
+      # The .exe alone does not run: it needs flutter_windows.dll,
+      # llama_bridge.dll and the data/ directory beside it. Ship the folder.
+      - name: Stage
+        id: stage
+        shell: pwsh
+        run: |
+          $mode = "${{ inputs.build_mode }}"
+          $cfg = (Get-Culture).TextInfo.ToTitleCase($mode)
+          $src = "build/windows/x64/runner/$cfg"
+          if (-not (Test-Path $src)) { throw "missing $src" }
+          $sha = git rev-parse --short HEAD
+          $name = "enlibra-windows-$mode-$sha"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$src/*" -DestinationPath "dist/$name.zip"
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $size = "{0:N1} MB" -f ((Get-Item "dist/$name.zip").Length / 1MB)
+          @(
+            "### Windows"
+            "``$name.zip`` — $size"
+            ""
+            "Unzip and run ``enlibra_mobile.exe``. Keep the folder intact:"
+            "the exe needs the DLLs and ``data/`` beside it."
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: dist/*.zip
+          retention-days: 14
+          if-no-files-found: error
+
+  macos:
+    if: contains(fromJSON('["macos","all"]'), inputs.platform)
+    name: macOS
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          architecture: arm64
+          cache: true
+
+      # CocoaPods cannot drive llama.cpp's CMake build, so Apple platforms
+      # consume a prebuilt xcframework. ~15 min, cached on the submodule SHA.
+      - name: Resolve llama.cpp revision
+        id: llama
+        run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: xcframework
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: xcframework-${{ steps.llama.outputs.sha }}
+
+      - name: Build xcframework
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+
+      - run: flutter pub get
+
+      - name: Build
+        run: >
+          flutter build macos --${{ inputs.build_mode }}
+          ${{ inputs.fake_engine && '--dart-define=USE_FAKE_ENGINE=true' || '' }}
+
+      - name: Stage
+        id: stage
+        run: |
+          set -euo pipefail
+          app=$(find build/macos/Build/Products -maxdepth 2 -name '*.app' | head -1)
+          name="enlibra-macos-${{ inputs.build_mode }}-$(git rev-parse --short HEAD)"
+          mkdir -p dist
+          # ditto preserves the bundle's symlinks and permissions; zip -r
+          # mangles frameworks inside a .app.
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "### macOS"
+            echo "\`$name.zip\` — $(du -h "dist/$name.zip" | cut -f1)"
+            echo ''
+            echo 'Unsigned, so Gatekeeper will block it on first open:'
+            echo '`xattr -dr com.apple.quarantine Enlibra.app` then right-click → Open.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: dist/*.zip
+          retention-days: 14
+          if-no-files-found: error
+
+  ios:
+    if: contains(fromJSON('["ios","all"]'), inputs.platform)
+    name: iOS (unsigned)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          architecture: arm64
+          cache: true
+
+      - name: Resolve llama.cpp revision
+        id: llama
+        run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: xcframework
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: xcframework-${{ steps.llama.outputs.sha }}
+
+      - name: Build xcframework
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+
+      - run: flutter pub get
+
+      # No signing secrets here by design, so this cannot produce an
+      # installable build on its own. It verifies the build and gives you an
+      # unsigned .ipa to re-sign with Sideloadly, AltStore or your own
+      # certificate. release.yml is the signed path.
+      - name: Build (unsigned)
+        run: >
+          flutter build ios --${{ inputs.build_mode }} --no-codesign
+          ${{ inputs.fake_engine && '--dart-define=USE_FAKE_ENGINE=true' || '' }}
+
+      - name: Package unsigned IPA
+        id: stage
+        run: |
+          set -euo pipefail
+          app=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' | head -1)
+          name="enlibra-ios-unsigned-${{ inputs.build_mode }}-$(git rev-parse --short HEAD)"
+          mkdir -p dist/Payload
+          cp -R "$app" dist/Payload/
+          (cd dist && zip -qry "$name.ipa" Payload && rm -rf Payload)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "### iOS"
+            echo "\`$name.ipa\` — $(du -h "dist/$name.ipa" | cut -f1)"
+            echo ''
+            echo '> **Unsigned.** Will not install as-is. Re-sign it with'
+            echo '> Sideloadly/AltStore, or use `release.yml` with signing secrets.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: dist/*.ipa
+          retention-days: 14
+          if-no-files-found: error

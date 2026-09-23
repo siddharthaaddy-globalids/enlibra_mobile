@@ -7,9 +7,36 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Overridable so CI and IDEs can point at a checkout elsewhere. Default is
 # the git submodule at the repository root.
+#
+# Finding it is not a fixed relative path, because the Windows build reaches
+# this file through a plugin symlink under
+# windows/flutter/ephemeral/.plugin_symlinks/, where CMAKE_CURRENT_LIST_DIR
+# is nowhere near the repository root. Android and Linux use the real path.
+# So: try several anchors, resolving symlinks, and walk up from each.
 if(NOT DEFINED LLAMA_CPP_DIR)
-  set(LLAMA_CPP_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../third_party/llama.cpp")
+  get_filename_component(_lb_real "${CMAKE_CURRENT_LIST_DIR}" REALPATH)
+  foreach(_lb_anchor "${_lb_real}" "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_SOURCE_DIR}")
+    set(_lb_dir "${_lb_anchor}")
+    foreach(_lb_up RANGE 6)
+      if(EXISTS "${_lb_dir}/third_party/llama.cpp/include/llama.h")
+        set(LLAMA_CPP_DIR "${_lb_dir}/third_party/llama.cpp")
+        break()
+      endif()
+      get_filename_component(_lb_dir "${_lb_dir}" DIRECTORY)
+    endforeach()
+    if(DEFINED LLAMA_CPP_DIR)
+      break()
+    endif()
+  endforeach()
 endif()
+
+if(NOT DEFINED LLAMA_CPP_DIR)
+  message(FATAL_ERROR
+    "Could not locate third_party/llama.cpp by walking up from "
+    "${CMAKE_CURRENT_LIST_DIR}. Run: git submodule update --init --recursive "
+    "(or pass -DLLAMA_CPP_DIR=/path/to/llama.cpp)")
+endif()
+
 get_filename_component(LLAMA_CPP_DIR "${LLAMA_CPP_DIR}" ABSOLUTE)
 
 if(NOT EXISTS "${LLAMA_CPP_DIR}/include/llama.h")
@@ -54,7 +81,36 @@ elseif(APPLE)
   set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
 endif()
 
-add_subdirectory("${LLAMA_CPP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp" EXCLUDE_FROM_ALL)
+# Deliberately NOT EXCLUDE_FROM_ALL. Under the Visual Studio generator that
+# suppresses generation of the ggml .vcxproj files while llama.vcxproj still
+# references them, and MSBuild fails with MSB3202. Ninja tolerates it, so
+# this only ever breaks the Windows build. Tests, examples, tools and the
+# server are already off above, so including all targets costs us nothing
+# beyond llama and ggml, which we link anyway.
+#
+# But keeping install() active brings its own problem: llama.cpp installs its
+# libraries and headers unconditionally, while Flutter sets
+# CMAKE_INSTALL_PREFIX to a generator expression ($<TARGET_FILE_DIR:...>).
+# Those destinations are computed at generate time, so the literal genex text
+# ends up in the path and the install step dies with
+#   file cannot create directory: .../$<TARGET_FILE_DIR:enlibra_mobile>/lib
+#
+# We want none of llama.cpp's install rules -- Flutter bundles our DLL via
+# llama_bridge_bundled_libraries below. So override install() with a macro
+# that swallows calls only while the flag is set. The flag is a directory
+# variable, so it is visible to llama.cpp (added beneath us) and absent in
+# Flutter's own scope, whose install() rules must keep working. Overriding
+# exactly once matters: a second override would make _install resolve to the
+# first override rather than the built-in.
+macro(install)
+  if(NOT _LB_SUPPRESS_INSTALL)
+    _install(${ARGV})
+  endif()
+endmacro()
+
+set(_LB_SUPPRESS_INSTALL TRUE)
+add_subdirectory("${LLAMA_CPP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp")
+set(_LB_SUPPRESS_INSTALL FALSE)
 
 add_library(llama_bridge SHARED llama_bridge.cpp)
 
