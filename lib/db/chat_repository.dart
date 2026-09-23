@@ -66,6 +66,22 @@ class ChatRepository {
   Future<void> deleteConversation(int id) =>
       _db.delete('conversations', where: 'id = ?', whereArgs: [id]);
 
+  /// Conversations belonging to [modelId].
+  ///
+  /// Returned as ids rather than deleted outright because each one also owns a
+  /// serialised KV cache on disk (`StoragePaths.sessionFile`), and a foreign
+  /// key cascade cannot reach a file. Removing a model has to walk these to
+  /// avoid leaving session state behind for a model that no longer exists.
+  Future<List<int>> conversationIdsForModel(String modelId) async {
+    final rows = await _db.query(
+      'conversations',
+      columns: ['id'],
+      where: 'model_id = ?',
+      whereArgs: [modelId],
+    );
+    return rows.map((r) => r['id'] as int).toList(growable: false);
+  }
+
   Future<List<StoredMessage>> messages(int conversationId) async {
     final rows = await _db.query(
       'messages',

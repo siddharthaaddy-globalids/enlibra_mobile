@@ -10,6 +10,17 @@
          without this. -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- Model downloads run in a foreground service so they survive the app
+         being backgrounded, and Android will not start one without a visible
+         notification. On Android 13+ that notification needs the user's
+         consent, which is asked for the first time a model is added. Refusing
+         it does not stop the download; it makes it less visible and easier for
+         the system to kill.
+
+         The foreground service itself is declared by the background_downloader
+         package's own manifest and merged in. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="Enlibra"
         android:name="${applicationName}"

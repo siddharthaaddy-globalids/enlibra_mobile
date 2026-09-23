@@ -6,6 +6,7 @@ import 'chat/chat_controller.dart';
 import 'core/device_tier.dart';
 import 'db/app_database.dart';
 import 'db/chat_repository.dart';
+import 'download/background_transfer.dart';
 import 'download/model_downloader.dart';
 import 'download/storage_paths.dart';
 import 'llama/fake_llama_engine.dart';
@@ -36,6 +37,13 @@ const _apiBase = String.fromEnvironment(
   defaultValue: 'https://api.example.com/v1/',
 );
 
+/// Whether downloads are handed to the platform's own service.
+///
+/// Mobile only. Desktop has no equivalent notion of the app being killed to
+/// reclaim memory, and the in-process downloader is simpler and already
+/// covered by tests.
+bool get _usesBackgroundTransfer => Platform.isAndroid || Platform.isIOS;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -43,6 +51,10 @@ Future<void> main() async {
   final database = await AppDatabase.open();
   final theme = await ThemeController.load();
   final manualModels = await ManualModelStore.load();
+
+  // Before the first frame, so a transfer that continued while the app was
+  // away is reattached rather than appearing to have vanished.
+  if (_usesBackgroundTransfer) await BackgroundTransfer.initialise();
 
   runApp(
     EnlibraApp(
@@ -131,7 +143,14 @@ class _HomePageState extends State<HomePage> {
     manual: _manual,
     remote: BackendManifestSource(baseUrl: Uri.parse(_apiBase)),
   );
-  late final ModelDownloader _downloader = ModelDownloader(source: _source);
+  late final BackgroundTransfer? _background = _usesBackgroundTransfer
+      ? BackgroundTransfer()
+      : null;
+
+  late final ModelDownloader _downloader = ModelDownloader(
+    source: _source,
+    background: _background,
+  );
 
   List<ModelManifest>? _catalog;
   Object? _error;
@@ -159,13 +178,39 @@ class _HomePageState extends State<HomePage> {
     );
     if (manifest == null) return;
     await widget.manualModels.upsert(manifest);
+    // Asked for here rather than at launch: a permission prompt makes sense
+    // next to the thing that needs it, and until a model exists there is
+    // nothing to notify about.
+    if (_usesBackgroundTransfer) {
+      await BackgroundTransfer.requestNotificationPermission();
+    }
     await _loadCatalog();
   }
 
+  /// Removes every trace of [manifest] from the device.
+  ///
+  /// Four things accumulate per model and none of them clean each other up:
+  /// the weights (and any half-finished `.part`), the stored manifest with its
+  /// download link, the conversations held against that model id, and the
+  /// serialised KV cache each of those conversations wrote. A foreign key
+  /// cascade reaches the first two of those and no further, so the session
+  /// files are walked by hand -- otherwise a removed model leaves hundreds of
+  /// megabytes of session state addressed to something that no longer exists.
   Future<void> _removeModel(ModelManifest manifest) async {
+    // Stop first. Deleting files out from under a live download leaves it
+    // writing to an unlinked handle and re-creating state we just removed.
+    _downloader.cancel();
+
     await widget.manualModels.remove(manifest.id);
-    // The weights are the expensive thing on a phone's storage, so removing a
-    // model removes the files too rather than just forgetting the link.
+
+    for (final id in await widget.repository.conversationIdsForModel(
+      manifest.id,
+    )) {
+      await widget.repository.deleteConversation(id);
+      final session = StoragePaths.instance.sessionFile(id);
+      if (await session.exists()) await session.delete();
+    }
+
     await StoragePaths.instance.deleteModel(manifest.id);
     await _loadCatalog();
   }

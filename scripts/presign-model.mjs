@@ -297,6 +297,7 @@ async function main() {
   // s3:ListBucket, and a caller may only have s3:GetObject.
   const isPrefix = key === "" || key.endsWith("/") || !/\.[a-z0-9]+$/i.test(key);
   let objects;
+  let headDenied = false;
   if (isPrefix) {
     try {
       objects = await listObjects(s3, bucket, key);
@@ -322,12 +323,18 @@ async function main() {
       size = head.ContentLength ?? 0;
     } catch (err) {
       if (!isDenied(err)) throw err;
-      // The size is a nicety here: the app reads the real total out of the
-      // Content-Range of its first ranged request. Better to hand over a
-      // working URL with an unknown size than to refuse over a HEAD.
+      // s3:GetObject is what grants HeadObject, so a 403 here all but
+      // guarantees the signed URL will be refused the same way. The URL is
+      // still printed -- signing is local and the caller may know something we
+      // do not -- but quietly calling this a missing file size would send
+      // someone off to debug a download that was never going to start.
+      headDenied = true;
       console.warn(
-        "presign-model: cannot read this object's size (403 on HeadObject). " +
-        "Signing anyway; the app will discover the size when it downloads."
+        "\npresign-model: WARNING -- HeadObject was refused (403) for this\n" +
+        "  object. s3:GetObject is what grants HeadObject, so the URL below\n" +
+        "  will almost certainly be refused too. Signing is a local HMAC and\n" +
+        "  needs no permission, which is why it still succeeds here.\n" +
+        "  Check which credentials are exported in THIS shell before using it."
       );
     }
     objects = [{ key, size }];
@@ -415,12 +422,17 @@ async function main() {
   if (opts.json) {
     console.log(JSON.stringify(manifest, null, 2));
   } else {
-    report({ bucket, prefix, region, files, skipped, expiresAt, opts, resolved });
+    report({
+      bucket, prefix, region, files, skipped, expiresAt, opts, resolved,
+      headDenied,
+    });
   }
   s3.destroy();
 }
 
-function report({ bucket, prefix, region, files, skipped, expiresAt, opts, resolved }) {
+function report({
+  bucket, prefix, region, files, skipped, expiresAt, opts, resolved, headDenied,
+}) {
   const total = files.reduce((n, f) => n + (f.sizeBytes ?? 0), 0);
   console.log("");
   console.log("  s3://" + bucket + "/" + prefix);
@@ -429,6 +441,12 @@ function report({ bucket, prefix, region, files, skipped, expiresAt, opts, resol
     (total > 0 ? humanBytes(total) : "size unknown")
   );
   console.log("  valid until " + expiresAt);
+  // Which identity signed this. The single most common reason a URL 403s is
+  // that the wrong credentials were in the shell, and that is invisible in
+  // the URL unless you know to look for it.
+  if (resolved && resolved.accessKeyId) {
+    console.log("  signed by " + resolved.accessKeyId);
+  }
   console.log("");
 
   for (const f of files) {
@@ -457,6 +475,14 @@ function report({ bucket, prefix, region, files, skipped, expiresAt, opts, resol
       "  Note: signed with temporary credentials, so these URLs stop working\n" +
       "  when that session expires, whatever --expires says." + until + "\n" +
       "  Use a long-lived key pair if you want the full 7 days."
+    );
+    console.log("");
+  }
+
+  if (headDenied) {
+    console.log(
+      "  This URL is expected to fail: the identity above could not read\n" +
+      "  the object. Export the credentials that can, and sign it again."
     );
     console.log("");
   }

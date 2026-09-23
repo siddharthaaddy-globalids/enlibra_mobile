@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -27,6 +28,17 @@ class StoragePaths {
     return i;
   }
 
+  /// Roots under a caller-supplied directory, for tests.
+  ///
+  /// [init] goes through `path_provider`, which needs a platform channel and
+  /// so cannot run under `flutter test`. This keeps the download logic
+  /// testable without mocking a plugin.
+  @visibleForTesting
+  static StoragePaths at(Directory root) => StoragePaths._(
+    Directory(p.join(root.path, 'models'))..createSync(recursive: true),
+    Directory(p.join(root.path, 'sessions'))..createSync(recursive: true),
+  );
+
   static Future<StoragePaths> init() async {
     final base = await getApplicationSupportDirectory();
     final models = Directory(p.join(base.path, 'models'));
@@ -44,6 +56,15 @@ class StoragePaths {
 
   File modelFile(String modelId, String fileName) =>
       File(p.join(modelsRoot.path, modelId, fileName));
+
+  /// A model's directory expressed relative to the application support root.
+  ///
+  /// The platform download service addresses its destination that way --
+  /// a base directory plus a relative path -- rather than by absolute path, so
+  /// this is the translation. It resolves to the same place [modelDir] does,
+  /// because [init] roots everything at `getApplicationSupportDirectory()`,
+  /// which is exactly what `BaseDirectory.applicationSupport` means.
+  String modelDirectoryName(String modelId) => 'models/$modelId';
 
   /// Partial download. Promoted to the real name only after the checksum
   /// verifies, so a truncated file can never look like a valid model.

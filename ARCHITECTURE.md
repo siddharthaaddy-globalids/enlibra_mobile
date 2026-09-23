@@ -92,6 +92,53 @@ Download invariants: HTTP Range resume, SHA-256 verified before use, written
 to `.part` and atomically renamed, `.version` marker written last so a
 crash mid-download leaves the model correctly marked as not installed.
 
+### Who moves the bytes
+
+Two transfers, one contract -- when either finishes, the `.part` file holds the
+whole thing, and verification and promotion are shared so neither can skip an
+integrity check.
+
+- **Mobile** hands the transfer to the platform: an Android foreground service,
+  `URLSession` background transfers on iOS, both via `background_downloader`.
+  A 2.3GB download over a mobile connection gives Android plenty of chances to
+  reclaim the app, and an in-process download does not survive that. The
+  notification is not decoration: Android will not run a foreground service
+  without one.
+- **Desktop** downloads in-process. There is no equivalent notion of the app
+  being killed to reclaim memory, and the in-process path is simpler to reason
+  about -- it is also the one the tests cover.
+
+Failure modes that cost real time to diagnose, and what now catches them:
+
+- A **stalled** connection produces no error and no end of stream. Without a
+  watchdog it is indistinguishable from a download frozen at 7%. `stallTimeout`
+  turns it into a `DownloadStalled` the user can retry; the partial file is
+  kept, so retrying resumes.
+- **Cancel** tears the subscription down rather than setting a flag read on the
+  next chunk -- on a stalled connection that flag is never read, which is
+  exactly when Cancel gets pressed.
+- `yield*` **forwards a delegated stream's errors past the enclosing
+  try/catch**, so every download failure used to escape as a stream error
+  instead of a `failed` event, leaving the UI frozen at whatever percentage it
+  had reached. The loop is an explicit `await for` for that reason.
+
+### What a model owns
+
+Removing one has to reach all of it, and nothing cleans up anything else:
+
+| | Cleared by |
+| --- | --- |
+| Weights, `.part`, `.version` | `StoragePaths.deleteModel` |
+| Manifest + its download link | `ManualModelStore.remove` |
+| Conversations (messages, summaries cascade) | `deleteConversation` per id |
+| Serialised KV cache per conversation | walked by hand -- a foreign key cascade cannot reach a file |
+| In-flight transfer | cancelled first, so nothing re-creates what was just deleted |
+
+The UI's progress map is keyed by model id, and **ids are derived from the URL**
+-- so re-pasting the same link yields the same id. Failing to clear that entry
+makes a freshly added model open at the percentage the deleted one reached,
+which looks exactly like a download cache that was never cleared.
+
 ### Adding a model by link (the interim path)
 
 That backend is `managed-service-api`, and its content endpoint

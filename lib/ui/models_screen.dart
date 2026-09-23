@@ -81,14 +81,70 @@ class _ModelsScreenState extends State<ModelsScreen> {
     });
   }
 
+  /// Throws away the bytes on disk but keeps the model and its link.
+  ///
+  /// Distinct from [_remove] on purpose. The common case is a download that
+  /// went wrong -- stalled, or a partial file that is not trusted -- where the
+  /// link is still perfectly good and re-pasting a pre-signed URL is a chore.
+  /// Removing the model to clear 400MB of half a file is the wrong trade.
+  Future<void> _deleteFiles(ModelManifest manifest) async {
+    final onDisk = await widget.downloader.bytesOnDisk(manifest);
+    if (!mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete downloaded files?'),
+        content: Text(
+          onDisk == 0
+              ? 'Nothing has been downloaded for '
+                    '${manifest.displayName} yet.'
+              : 'Frees ${_formatBytes(onDisk)}. '
+                    '${manifest.displayName} stays in the list with its '
+                    'download link, so you can start again from scratch.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    // Stop first. Deleting the file out from under a live download leaves the
+    // writer appending to an unlinked handle, and the next resume would then
+    // measure a file that is not there.
+    widget.downloader.cancel();
+    await widget.downloader.deleteFiles(manifest);
+
+    if (!mounted) return;
+    setState(() {
+      _installed.remove(manifest.id);
+      _progress.remove(manifest.id);
+    });
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes >= 1 << 30) return '${(bytes / (1 << 30)).toStringAsFixed(2)} GB';
+    if (bytes >= 1 << 20) return '${(bytes / (1 << 20)).toStringAsFixed(0)} MB';
+    return '${(bytes / (1 << 10)).toStringAsFixed(0)} KB';
+  }
+
   Future<void> _remove(ModelManifest manifest) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Remove ${manifest.displayName}?'),
         content: const Text(
-          'The downloaded files are deleted from this device. The link is '
-          'forgotten too, so adding it back means pasting it again.',
+          'Deletes the downloaded files, the download link, and every chat '
+          'held against this model. Adding it back means pasting a link '
+          'again.',
         ),
         actions: [
           TextButton(
@@ -104,7 +160,19 @@ class _ModelsScreenState extends State<ModelsScreen> {
     );
     if (confirmed != true) return;
     await widget.onRemoveModel(manifest);
-    if (mounted) setState(() => _installed.remove(manifest.id));
+    if (!mounted) return;
+
+    // Clearing `_progress` matters as much as clearing `_installed`.
+    //
+    // The map is keyed by model id, and a model id is derived from the URL --
+    // so re-pasting the same link produces the *same* id and the tile picks
+    // the stale entry straight back up. The symptom is a freshly added model
+    // that opens showing the percentage the deleted one had reached, which
+    // looks exactly like a download cache that was never cleared.
+    setState(() {
+      _installed.remove(manifest.id);
+      _progress.remove(manifest.id);
+    });
   }
 
   Future<void> _download(ModelManifest manifest) async {
@@ -118,14 +186,14 @@ class _ModelsScreenState extends State<ModelsScreen> {
         final error = p.error;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            // An expired pre-signed link is the common failure here and its
-            // message already says what to do about it, so it is shown as
-            // written rather than buried behind "Download failed:".
-            content: Text(
-              error is ManifestException
-                  ? error.message
-                  : 'Download failed: $error',
-            ),
+            // An expired link and a stalled connection are the two common
+            // failures here, and both already say what to do about them. Shown
+            // as written rather than buried behind "Download failed:".
+            content: Text(switch (error) {
+              ManifestException e => e.message,
+              DownloadStalled e => '$e',
+              _ => 'Download failed: $error',
+            }),
             duration: const Duration(seconds: 8),
           ),
         );
@@ -262,6 +330,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
                   icon: Icon(Icons.more_horiz, size: 18, color: t.textFaint),
                   onSelected: (choice) {
                     if (choice == 'relink') widget.onAddModel();
+                    if (choice == 'clear') _deleteFiles(manifest);
                     if (choice == 'remove') _remove(manifest);
                   },
                   itemBuilder: (_) => const [
@@ -272,7 +341,11 @@ class _ModelsScreenState extends State<ModelsScreen> {
                       value: 'relink',
                       child: Text('Update download link'),
                     ),
-                    PopupMenuItem(value: 'remove', child: Text('Remove')),
+                    PopupMenuItem(
+                      value: 'clear',
+                      child: Text('Delete downloaded files'),
+                    ),
+                    PopupMenuItem(value: 'remove', child: Text('Remove model')),
                   ],
                 ),
             ],

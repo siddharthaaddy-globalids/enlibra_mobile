@@ -31,6 +31,7 @@ dependencies:
 
   # Device RAM detection -> model tiering
   system_info2: ^4.0.0
+  background_downloader: ^9.6.2
 
 dev_dependencies:
   flutter_test:

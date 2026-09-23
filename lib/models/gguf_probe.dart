@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
 import '../core/memory_math.dart';
 import 'gguf_header.dart';
+import 'model_link.dart';
 import 'model_manifest.dart';
 
 /// What a probe of a remote GGUF found: enough to build a manifest, read out
@@ -179,19 +181,8 @@ class GgufProbe {
       throw GgufProbeException('the server did not respond within $timeout');
     }
 
-    if (response.statusCode == 403) {
-      throw GgufProbeException(
-        'the URL was refused (HTTP 403). Pre-signed links expire -- generate '
-        'a fresh one and paste it again.',
-      );
-    }
-    if (response.statusCode == 404) {
-      throw GgufProbeException('nothing at that URL (HTTP 404)');
-    }
     if (response.statusCode != 200 && response.statusCode != 206) {
-      throw GgufProbeException(
-        'the server answered HTTP ${response.statusCode}',
-      );
+      await _failFromResponse(response, url);
     }
 
     // 206 carries `Content-Range: bytes 0-N/TOTAL`, which is the only place the
@@ -215,6 +206,141 @@ class GgufProbe {
           : bytes,
       totalSize: totalSize,
     );
+  }
+
+  /// Turns a refusal into something that names the actual cause.
+  ///
+  /// A pre-signed URL can fail for several unrelated reasons that all arrive as
+  /// HTTP 403, and guessing between them wastes a lot of somebody's afternoon:
+  /// the signature really did expire, or the identity that signed it may not
+  /// read the object, or it was signed for the wrong region, or the device
+  /// clock is off, or the URL lost characters on the way through a chat client.
+  ///
+  /// S3 says which in the response body, so read it rather than guess.
+  static Future<Never> _failFromResponse(
+    http.StreamedResponse response,
+    Uri url,
+  ) async {
+    final body = await _readErrorBody(response.stream);
+    final code = _xmlTag(body, 'Code');
+    final detail = _xmlTag(body, 'Message');
+
+    String explain(String text) =>
+        detail == null ? text : '$text\n\nS3 said: $detail';
+
+    switch (code) {
+      case 'AccessDenied':
+        return throw GgufProbeException(
+          explain(
+            'S3 refused this link. The link itself is fine -- the AWS identity '
+            'that signed it is not allowed to read that object. Check which '
+            'credentials were exported when the URL was generated.',
+          ),
+        );
+      case 'ExpiredToken':
+      case 'TokenRefreshRequired':
+        return throw GgufProbeException(
+          explain(
+            'The credentials that signed this link have expired. They were '
+            'temporary (an STS session), so the link died with them however '
+            'long it was signed for. Sign a new one.',
+          ),
+        );
+      case 'RequestExpired':
+      case 'AccessDenied.RequestExpired':
+        return throw GgufProbeException(
+          'This link has expired. Generate a fresh one and paste it again -- '
+          'a part-finished download will resume rather than restart.',
+        );
+      case 'SignatureDoesNotMatch':
+        return throw GgufProbeException(
+          explain(
+            'The signature on this link is not valid for this object. It was '
+            'most likely signed for a different region, or with a mismatched '
+            'secret key.',
+          ),
+        );
+      case 'InvalidAccessKeyId':
+        return throw GgufProbeException(
+          explain(
+            'AWS does not recognise the access key that signed this link.',
+          ),
+        );
+      case 'RequestTimeTooSkewed':
+        return throw GgufProbeException(
+          'This device\'s clock is too far from the real time for AWS to '
+          'accept the signature. Fix the date and time, then try again.',
+        );
+      case 'AuthorizationQueryParametersError':
+      case 'InvalidRequest':
+        return throw GgufProbeException(
+          explain(
+            'This link is malformed -- most often it was truncated on the way '
+            'here. Copy the whole URL, including everything after the "?".',
+          ),
+        );
+      case 'NoSuchKey':
+        return throw GgufProbeException(
+          'There is no object at that path. Check the file name in the bucket.',
+        );
+      case 'NoSuchBucket':
+        return throw GgufProbeException('That bucket does not exist.');
+    }
+
+    if (response.statusCode == 404) {
+      return throw GgufProbeException('Nothing at that URL (HTTP 404).');
+    }
+
+    if (response.statusCode == 403) {
+      // No machine-readable code came back. The URL's own stamps still settle
+      // the expiry question, so at least do not blame something provably
+      // untrue.
+      final expiry = ModelLink.signatureExpiry(url);
+      if (expiry != null && expiry.isAfter(DateTime.now().toUtc())) {
+        return throw GgufProbeException(
+          'The server refused this link (HTTP 403), but it has not expired -- '
+          'it is signed until ${expiry.toIso8601String()}. That points at the '
+          'signing credentials not being allowed to read the object.',
+        );
+      }
+      if (expiry != null) {
+        return throw GgufProbeException(
+          'This link expired at ${expiry.toIso8601String()}. Generate a fresh '
+          'one -- a part-finished download will resume rather than restart.',
+        );
+      }
+      return throw GgufProbeException(
+        explain(
+          'The server refused this link (HTTP 403). Either it has expired or '
+          'the credentials that signed it cannot read the object.',
+        ),
+      );
+    }
+
+    return throw GgufProbeException(
+      explain('The server answered HTTP ${response.statusCode}.'),
+    );
+  }
+
+  /// Error documents are small; anything past this is not one, and there is no
+  /// reason to pull a gigabyte of body to quote in a message.
+  static Future<String> _readErrorBody(Stream<List<int>> stream) async {
+    final builder = BytesBuilder(copy: false);
+    try {
+      await for (final chunk in stream) {
+        builder.add(chunk);
+        if (builder.length >= 8192) break;
+      }
+    } catch (_) {
+      // A body we cannot read just means a less specific message.
+    }
+    return utf8.decode(builder.takeBytes(), allowMalformed: true);
+  }
+
+  static String? _xmlTag(String body, String tag) {
+    final match = RegExp('<$tag>(.*?)</$tag>', dotAll: true).firstMatch(body);
+    final value = match?.group(1)?.trim();
+    return (value == null || value.isEmpty) ? null : value;
   }
 
   static int? _totalFromContentRange(String? value) {

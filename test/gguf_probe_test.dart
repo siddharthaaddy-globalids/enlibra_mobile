@@ -67,11 +67,19 @@ Uint8List buildGguf({int padBytes = 0}) {
 
 /// Serves [body] with the Range semantics being tested.
 class _FakeS3 {
-  _FakeS3(this.body, {this.honourRange = true, this.status = 200});
+  _FakeS3(
+    this.body, {
+    this.honourRange = true,
+    this.status = 200,
+    this.errorBody,
+  });
 
   final Uint8List body;
   final bool honourRange;
   final int status;
+
+  /// What S3 returns alongside a refusal: an XML document naming the cause.
+  final String? errorBody;
 
   HttpServer? _server;
   final requestedRanges = <String?>[];
@@ -87,6 +95,13 @@ class _FakeS3 {
 
       if (status != 200) {
         request.response.statusCode = status;
+        if (errorBody != null) {
+          request.response.headers.contentType = ContentType(
+            'application',
+            'xml',
+          );
+          request.response.write(errorBody);
+        }
         await request.response.close();
         return;
       }
@@ -177,8 +192,44 @@ void main() {
       expect(probed.sizeBytes, buildGguf().length);
     });
 
-    test('explains a 403 as an expired link', () async {
-      final server = _FakeS3(buildGguf(), status: 403);
+    test('blames permissions, not expiry, when S3 says AccessDenied', () async {
+      // The failure that actually happens: the link is freshly signed and
+      // valid for days, but the identity that signed it may not read the
+      // object. Calling that "expired" sends someone off re-signing a URL that
+      // was never the problem.
+      final server = _FakeS3(
+        buildGguf(),
+        status: 403,
+        errorBody:
+            '<?xml version="1.0" encoding="UTF-8"?><Error>'
+            '<Code>AccessDenied</Code>'
+            '<Message>User: arn:aws:iam::123:user/someone is not authorized '
+            'to perform: s3:GetObject</Message>'
+            '</Error>',
+      );
+      await server.start();
+      addTearDown(server.stop);
+
+      final probe = GgufProbe();
+      addTearDown(probe.close);
+
+      await expectLater(
+        probe.probe(server.url),
+        throwsA(
+          isA<GgufProbeException>()
+              .having((e) => e.message, 'message', contains('not allowed'))
+              .having((e) => e.message, 'message', contains('s3:GetObject'))
+              .having((e) => e.message, 'message', isNot(contains('expired'))),
+        ),
+      );
+    });
+
+    test('reports a genuinely expired signature as expired', () async {
+      final server = _FakeS3(
+        buildGguf(),
+        status: 403,
+        errorBody: '<Error><Code>RequestExpired</Code></Error>',
+      );
       await server.start();
       addTearDown(server.stop);
 
@@ -191,7 +242,65 @@ void main() {
           isA<GgufProbeException>().having(
             (e) => e.message,
             'message',
-            contains('expire'),
+            contains('expired'),
+          ),
+        ),
+      );
+    });
+
+    test('names a clock skew rather than blaming the link', () async {
+      // Plausible on a phone, and nothing about the URL is wrong.
+      final server = _FakeS3(
+        buildGguf(),
+        status: 403,
+        errorBody: '<Error><Code>RequestTimeTooSkewed</Code></Error>',
+      );
+      await server.start();
+      addTearDown(server.stop);
+
+      final probe = GgufProbe();
+      addTearDown(probe.close);
+
+      await expectLater(
+        probe.probe(server.url),
+        throwsA(
+          isA<GgufProbeException>().having(
+            (e) => e.message,
+            'message',
+            contains('clock'),
+          ),
+        ),
+      );
+    });
+
+    test('falls back to the URL stamps when S3 gives no error code', () async {
+      final server = _FakeS3(buildGguf(), status: 403);
+      await server.start();
+      addTearDown(server.stop);
+
+      // Signed a moment ago for a week: expiry is provably not the cause.
+      final signed = DateTime.now().toUtc();
+      final stamp =
+          '${signed.year}'
+          '${signed.month.toString().padLeft(2, '0')}'
+          '${signed.day.toString().padLeft(2, '0')}T'
+          '${signed.hour.toString().padLeft(2, '0')}'
+          '${signed.minute.toString().padLeft(2, '0')}'
+          '${signed.second.toString().padLeft(2, '0')}Z';
+      final url = server.url.replace(
+        queryParameters: {'X-Amz-Date': stamp, 'X-Amz-Expires': '604800'},
+      );
+
+      final probe = GgufProbe();
+      addTearDown(probe.close);
+
+      await expectLater(
+        probe.probe(url),
+        throwsA(
+          isA<GgufProbeException>().having(
+            (e) => e.message,
+            'message',
+            contains('has not expired'),
           ),
         ),
       );
