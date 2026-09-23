@@ -37,3 +37,33 @@ class AppLogo extends StatelessWidget {
     );
   }
 }
+
+/// The mark on its own, without the wordmark beside it.
+///
+/// Same artwork the launcher icons are generated from
+/// (`scripts/make-icons.mjs`), so what the user tapped on the home screen is
+/// what greets them inside. Single-colour and theme-independent: the orange
+/// carries on both backgrounds, which is why there is one file here and two
+/// of the wordmark.
+class AppMark extends StatelessWidget {
+  const AppMark({super.key, this.height = 48, this.semanticLabel = 'Enlibra'});
+
+  final double height;
+  final String semanticLabel;
+
+  /// Source artwork is 149x190.
+  static const aspectRatio = 149 / 190;
+
+  @override
+  Widget build(BuildContext context) {
+    return SvgPicture.asset(
+      'assets/logo/enlibra-mark.svg',
+      height: height,
+      width: height * aspectRatio,
+      fit: BoxFit.contain,
+      semanticsLabel: semanticLabel,
+      placeholderBuilder: (_) =>
+          SizedBox(height: height, width: height * aspectRatio),
+    );
+  }
+}

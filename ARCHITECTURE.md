@@ -92,6 +92,57 @@ Download invariants: HTTP Range resume, SHA-256 verified before use, written
 to `.part` and atomically renamed, `.version` marker written last so a
 crash mid-download leaves the model correctly marked as not installed.
 
+### Adding a model by link (the interim path)
+
+That backend is `managed-service-api`, and its content endpoint
+(`GET /slms/{slmId}/runs/{runId}/files/content`) is behind AWS Cognito, which
+the app does not speak yet. Until it does, a model gets onto a device by
+pasting a link:
+
+```
+scripts/presign-model.mjs  →  pre-signed URL  →  Models → Add model
+```
+
+The script is the last step of that endpoint — `GetObjectCommand` +
+`getSignedUrl` — run from a laptop that has credentials. See
+[scripts/README.md](scripts/README.md).
+
+**A pasted URL is not a manifest**, and the app needs a manifest: without a
+model's layer count, KV head count and head dimension it cannot say whether the
+model fits in RAM, and offering a download that will OOM on load is the one
+thing [memory sizing](#memory-the-chat-kind) exists to prevent.
+
+So `GgufProbe` reads the GGUF's own header over a ranged request — a couple of
+megabytes of a 2.5GB file — and builds the manifest from it: architecture,
+block count, KV heads, head dimension, trained context, quantisation label, and
+a parameter count summed over the tensor index. The total file size comes from
+the response's `Content-Range`, so it is learned even when the script's identity
+could not call `HeadObject`. This is `lib/models/gguf_header.dart` plus
+`lib/models/gguf_probe.dart`; the format is stable and versioned, and the parser
+refuses versions it does not know.
+
+Consequences worth stating:
+
+- **No checksum.** A pasted URL has no catalog entry to carry one, so the
+  download is verified by byte count (`SizeMismatch`) rather than SHA-256. That
+  catches a truncated transfer, not a corrupted one. `--checksum` on the script
+  closes the gap at the cost of streaming the object past a hash first.
+- **The URL is stored.** `ManualModelStore` persists the manifest *including*
+  its pre-signed URL, because there is nothing to re-request it from. It is an
+  expiring capability to read one object, not a credential.
+- **Expiry is surfaced, not discovered.** `X-Amz-Date` + `X-Amz-Expires` are
+  read out of the URL, so the app states the deadline before a multi-gigabyte
+  download rather than failing at 80%.
+- **Identity comes from the key, not the signature.** The model id is derived
+  from the run directory (`enlibraq3-14b-to-4b-2026-09-22-1209`), which is
+  stable across re-signings — so pasting a refreshed URL updates the model in
+  place and the partial download *resumes*. The script and the app derive it
+  the same way, and both have tests pinning that.
+
+`CompositeManifestSource` puts these in front of the backend catalog and routes
+`resolve()` by id, so the catalog path stays wired up and starts working the
+moment Cognito lands, with no change at the call site.
+
 ## The llama.cpp layer
 
 `third_party/llama.cpp` is a git submodule. After cloning:
@@ -226,6 +277,22 @@ running.
 - [ ] Replace the placeholder `sha256` values in
       `assets/manifests/catalog.json`.
 
+## Branding
+
+Three pieces of artwork, all under `assets/logo/`:
+
+- `enlibra-light.svg` / `enlibra-dark.svg` — the wordmark, shown by `AppLogo`.
+  Two files rather than one tinted file, because the dark-background version
+  uses a softer orange (`#f69446`) than the light one (`#f67711`) — the usual
+  correction for a saturated hue glowing against a dark field.
+- `enlibra-mark.svg` — the mark on its own. Single-colour and theme-independent,
+  shown by `AppMark`, and the source every launcher icon is generated from.
+
+Launcher icons are **generated, not hand-placed**: `scripts/make-icons.mjs`
+writes all 30 of them (Android mipmaps plus an adaptive icon, the iOS
+`AppIcon.appiconset`, and the web favicon and maskable icons) from that one SVG.
+CI checks they are current. See [scripts/README.md](scripts/README.md#make-iconsmjs--launcher-icons-from-the-mark).
+
 ## Notes
 
 - `flutter run -d windows` needs Developer Mode enabled on Windows
@@ -238,7 +305,8 @@ running.
 `.github/workflows/ci.yml` — on push/PR to `main`:
 
 - `analyze` — `dart format --set-exit-if-changed`, `flutter analyze
-  --fatal-infos`, `flutter test --coverage`. Everything else depends on it.
+  --fatal-infos`, `flutter test --coverage`, and `make-icons --check`.
+  Everything else depends on it.
 - `android` — debug APK, arm64 only.
 - `ios` — `--no-codesign`. Compiles and links without certificates, so real
   build breaks are caught. Skipped for fork PRs, which cannot read secrets

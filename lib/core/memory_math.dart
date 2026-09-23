@@ -88,14 +88,20 @@ class ModelShape {
 /// cache to `q8_0` roughly halves its footprint for very little quality
 /// cost, and on a phone that is often the difference between running and
 /// being killed.
+/// [weightsBytesOverride] is the real size of the weights file when it is
+/// known. Prefer it: the bits-per-weight table is an average over
+/// quantisation formats, and it has nothing useful to say about a format it
+/// has never heard of -- which is exactly the case for a model added by URL
+/// from a fresh quantisation run.
 MemoryEstimate estimateMemory({
   required ModelShape shape,
   required String quantization,
   required int contextLength,
   String kvType = 'q8_0',
+  int? weightsBytesOverride,
 }) {
   final bits = _bitsPerWeight[quantization] ?? 4.83;
-  final weights = (shape.paramCount * bits / 8).round();
+  final weights = weightsBytesOverride ?? (shape.paramCount * bits / 8).round();
   final kv = (shape.kvBytesPerToken(kvType) * contextLength).round();
 
   // Compute buffers scale with batch size and vocab, not context. 256MB is a
@@ -117,12 +123,14 @@ int maxContextForBudget({
   required String quantization,
   required int budgetBytes,
   String kvType = 'q8_0',
+  int? weightsBytesOverride,
 }) {
   final base = estimateMemory(
     shape: shape,
     quantization: quantization,
     contextLength: 0,
     kvType: kvType,
+    weightsBytesOverride: weightsBytesOverride,
   );
   final remaining = budgetBytes - base.totalBytes;
   if (remaining <= 0) return 0;

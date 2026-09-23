@@ -17,6 +17,9 @@ class ModelsScreen extends StatefulWidget {
     required this.device,
     required this.onReady,
     required this.themeController,
+    required this.onAddModel,
+    required this.onRemoveModel,
+    this.manualIds = const {},
     this.allowWithoutDownload = false,
   });
 
@@ -25,6 +28,16 @@ class ModelsScreen extends StatefulWidget {
   final DeviceCapabilities device;
   final void Function(ModelManifest manifest, int contextLength) onReady;
   final ThemeController themeController;
+
+  /// Opens the add-by-link sheet. Held by the owner, which is what persists
+  /// the result and rebuilds the catalog.
+  final Future<void> Function() onAddModel;
+
+  final Future<void> Function(ModelManifest manifest) onRemoveModel;
+
+  /// Ids that came from a pasted link rather than the catalog. Only these can
+  /// be removed -- a catalog entry is not the device's to delete.
+  final Set<String> manualIds;
 
   /// Lets a model be opened without downloading it. Set only when running
   /// against FakeLlamaEngine, which never touches the weights -- it is the
@@ -46,11 +59,52 @@ class _ModelsScreenState extends State<ModelsScreen> {
     _refreshInstalled();
   }
 
+  @override
+  void didUpdateWidget(ModelsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A model added by link arrives as a new catalog, and it may already be on
+    // disk -- re-pasting a refreshed URL for a model downloaded last week
+    // should show "Installed", not offer to download it again.
+    if (!identical(oldWidget.catalog, widget.catalog)) _refreshInstalled();
+  }
+
   Future<void> _refreshInstalled() async {
+    final found = <String>{};
     for (final m in widget.catalog) {
-      if (await widget.downloader.isInstalled(m)) _installed.add(m.id);
+      if (await widget.downloader.isInstalled(m)) found.add(m.id);
     }
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      _installed
+        ..clear()
+        ..addAll(found);
+    });
+  }
+
+  Future<void> _remove(ModelManifest manifest) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${manifest.displayName}?'),
+        content: const Text(
+          'The downloaded files are deleted from this device. The link is '
+          'forgotten too, so adding it back means pasting it again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await widget.onRemoveModel(manifest);
+    if (mounted) setState(() => _installed.remove(manifest.id));
   }
 
   Future<void> _download(ModelManifest manifest) async {
@@ -61,9 +115,20 @@ class _ModelsScreenState extends State<ModelsScreen> {
         setState(() => _installed.add(manifest.id));
       }
       if (p.stage == DownloadStage.failed && mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Download failed: ${p.error}')));
+        final error = p.error;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            // An expired pre-signed link is the common failure here and its
+            // message already says what to do about it, so it is shown as
+            // written rather than buried behind "Download failed:".
+            content: Text(
+              error is ManifestException
+                  ? error.message
+                  : 'Download failed: $error',
+            ),
+            duration: const Duration(seconds: 8),
+          ),
+        );
       }
     }
   }
@@ -76,6 +141,11 @@ class _ModelsScreenState extends State<ModelsScreen> {
       appBar: AppBar(
         title: const AppLogo(height: 22),
         actions: [
+          IconButton(
+            tooltip: 'Add a model by link',
+            icon: const Icon(Icons.add),
+            onPressed: widget.onAddModel,
+          ),
           ThemeToggleButton(controller: widget.themeController),
           const SizedBox(width: 4),
         ],
@@ -102,6 +172,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
                 ],
               ),
               const SizedBox(height: 20),
+              if (widget.catalog.isEmpty) _emptyState(),
               for (final m in widget.catalog) ...[
                 _tile(m),
                 const SizedBox(height: 12),
@@ -109,6 +180,36 @@ class _ModelsScreenState extends State<ModelsScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: t.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('No models yet', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 6),
+          Text(
+            'Add one with a pre-signed download link. '
+            'scripts/presign-model.mjs mints one from an S3 prefix.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: widget.onAddModel,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add a model'),
+          ),
+        ],
       ),
     );
   }
@@ -154,6 +255,25 @@ class _ModelsScreenState extends State<ModelsScreen> {
                       ? 'Simulated'
                       : 'Installed',
                   accent: true,
+                ),
+              if (widget.manualIds.contains(manifest.id))
+                PopupMenuButton<String>(
+                  tooltip: 'Model options',
+                  icon: Icon(Icons.more_horiz, size: 18, color: t.textFaint),
+                  onSelected: (choice) {
+                    if (choice == 'relink') widget.onAddModel();
+                    if (choice == 'remove') _remove(manifest);
+                  },
+                  itemBuilder: (_) => const [
+                    // Pre-signed links expire; re-pasting one is routine
+                    // rather than exceptional, so it lives here and not
+                    // only in the error message.
+                    PopupMenuItem(
+                      value: 'relink',
+                      child: Text('Update download link'),
+                    ),
+                    PopupMenuItem(value: 'remove', child: Text('Remove')),
+                  ],
                 ),
             ],
           ),

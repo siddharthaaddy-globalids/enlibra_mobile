@@ -25,10 +25,16 @@ class ModelFile {
   final String fileName;
 
   final int sizeBytes;
-  final String sha256;
+
+  /// Null when the file's checksum is not known ahead of time -- a model added
+  /// by pasting a pre-signed URL has no catalog entry to carry one. The
+  /// downloader then falls back to checking the byte count, which catches a
+  /// truncated transfer but not a corrupted one. Anything served from the
+  /// catalog must carry a real checksum.
+  final String? sha256;
 
   /// Presigned, short-lived. Null in the bundled manifest; filled in by the
-  /// backend at request time. Never persisted.
+  /// backend at request time.
   final String? url;
 
   ModelFile withUrl(String value) => ModelFile(
@@ -41,17 +47,27 @@ class ModelFile {
 
   factory ModelFile.fromJson(Map<String, dynamic> json) {
     final sha = json['sha256'] as String?;
-    if (sha == null || sha.length != 64) {
-      throw ManifestException('file "${json['fileName']}" has no valid sha256');
+    if (sha != null && sha.length != 64) {
+      throw ManifestException(
+        'file "${json['fileName']}" has a malformed sha256',
+      );
     }
     return ModelFile(
       role: json['role'] as String? ?? 'weights',
       fileName: json['fileName'] as String,
       sizeBytes: json['sizeBytes'] as int,
-      sha256: sha.toLowerCase(),
+      sha256: sha?.toLowerCase(),
       url: json['url'] as String?,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'role': role,
+    'fileName': fileName,
+    'sizeBytes': sizeBytes,
+    'sha256': sha256,
+    'url': url,
+  };
 }
 
 class SamplingDefaults {
@@ -82,6 +98,14 @@ class SamplingDefaults {
       maxTokens: json['maxTokens'] as int? ?? 512,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'temperature': temperature,
+    'topP': topP,
+    'topK': topK,
+    'repeatPenalty': repeatPenalty,
+    'maxTokens': maxTokens,
+  };
 }
 
 /// Schema v1. Bump [schemaVersion] on any breaking change and keep the
@@ -142,11 +166,16 @@ class ModelManifest {
 
   /// Peak memory at a given context. Pass the context you intend to load
   /// with, not necessarily [contextLength].
+  ///
+  /// The weights term comes from the file's own size rather than from
+  /// parameter count times bits-per-weight. The manifest already states the
+  /// exact byte count, so there is no reason to estimate what is known.
   MemoryEstimate memoryAt(int context) => estimateMemory(
     shape: shape,
     quantization: quantization,
     contextLength: context,
     kvType: kvCacheType,
+    weightsBytesOverride: weightsFile.sizeBytes,
   );
 
   /// Largest context this device can afford, clamped to what the model
@@ -157,6 +186,7 @@ class ModelManifest {
       quantization: quantization,
       budgetBytes: usableRamBytes,
       kvType: kvCacheType,
+      weightsBytesOverride: weightsFile.sizeBytes,
     );
     return maxFit < contextLength ? maxFit : contextLength;
   }
@@ -216,4 +246,43 @@ class ModelManifest {
       description: json['description'] as String?,
     );
   }
+
+  /// Round-trips through [fromJson]. Used to persist a manually added model,
+  /// which has no catalog to be re-read from.
+  Map<String, dynamic> toJson() => {
+    'schemaVersion': schemaVersion,
+    'id': id,
+    'displayName': displayName,
+    'description': description,
+    'version': version,
+    'quantization': quantization,
+    'kvCacheType': kvCacheType,
+    'contextLength': contextLength,
+    'chatTemplate': chatTemplate,
+    'stopStrings': stopStrings,
+    'shape': {
+      'paramCount': shape.paramCount,
+      'layerCount': shape.layerCount,
+      'kvHeadCount': shape.kvHeadCount,
+      'headDim': shape.headDim,
+    },
+    'files': files.map((f) => f.toJson()).toList(growable: false),
+    'defaults': sampling.toJson(),
+  };
+
+  ModelManifest withFiles(List<ModelFile> replacement) => ModelManifest(
+    schemaVersion: schemaVersion,
+    id: id,
+    displayName: displayName,
+    version: version,
+    files: replacement,
+    quantization: quantization,
+    shape: shape,
+    contextLength: contextLength,
+    chatTemplate: chatTemplate,
+    stopStrings: stopStrings,
+    sampling: sampling,
+    kvCacheType: kvCacheType,
+    description: description,
+  );
 }

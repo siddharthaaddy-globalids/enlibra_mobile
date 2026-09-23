@@ -39,6 +39,21 @@ jobs:
       - name: Test
         run: flutter test --coverage
 
+      # Launcher icons are generated from assets/logo/enlibra-mark.svg. This
+      # catches artwork that changed without the icons being regenerated --
+      # otherwise the first sign of it is a stale icon on a home screen.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Verify launcher icons are current
+        working-directory: scripts
+        run: |
+          npm ci
+          node make-icons.mjs --check
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

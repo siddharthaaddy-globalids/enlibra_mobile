@@ -53,6 +53,18 @@ class ChecksumMismatch implements Exception {
       'ChecksumMismatch($fileName: expected $expected, got $actual)';
 }
 
+/// Raised for a file with no published checksum whose download did not come
+/// out the length it was supposed to. Weaker than [ChecksumMismatch] -- it
+/// catches a truncated or over-long transfer, not a corrupted one.
+class SizeMismatch implements Exception {
+  SizeMismatch(this.fileName, this.expected, this.actual);
+  final String fileName;
+  final int expected, actual;
+  @override
+  String toString() =>
+      'SizeMismatch($fileName: expected $expected bytes, got $actual)';
+}
+
 /// Downloads model files with resume, integrity verification, and atomic
 /// promotion.
 ///
@@ -214,10 +226,24 @@ class ModelDownloader {
       totalBytes: grandTotal,
     );
 
-    final digest = await _sha256OfFile(partial);
-    if (digest != file.sha256) {
-      await partial.delete();
-      throw ChecksumMismatch(file.fileName, file.sha256, digest);
+    // A model added by pasting a pre-signed URL has no published checksum --
+    // there is no catalog entry to have carried one. Check the length instead,
+    // which still refuses a transfer that was cut short. Weaker, and the
+    // difference matters: a corrupted GGUF of the right length reaches
+    // llama.cpp and fails there instead of here.
+    final expected = file.sha256;
+    if (expected == null) {
+      final actual = await partial.length();
+      if (file.sizeBytes > 0 && actual != file.sizeBytes) {
+        await partial.delete();
+        throw SizeMismatch(file.fileName, file.sizeBytes, actual);
+      }
+    } else {
+      final digest = await _sha256OfFile(partial);
+      if (digest != expected) {
+        await partial.delete();
+        throw ChecksumMismatch(file.fileName, expected, digest);
+      }
     }
 
     // Atomic within the same filesystem. Until this line runs, nothing

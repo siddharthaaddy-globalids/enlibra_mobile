@@ -1,0 +1,21 @@
+{
+  "name": "enlibra-model-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev-time helpers: pre-signed model downloads, launcher icons.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "presign": "node presign-model.mjs",
+    "icons": "node make-icons.mjs",
+    "icons:check": "node make-icons.mjs --check"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.658.0",
+    "@aws-sdk/credential-providers": "^3.658.0",
+    "@aws-sdk/s3-request-presigner": "^3.658.0",
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

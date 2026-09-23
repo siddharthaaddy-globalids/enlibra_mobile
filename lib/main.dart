@@ -12,7 +12,10 @@ import 'llama/fake_llama_engine.dart';
 import 'llama/llama_ffi_engine.dart';
 import 'llama/llama_engine.dart';
 import 'models/manifest_source.dart';
+import 'models/manual_model_source.dart';
 import 'models/model_manifest.dart';
+import 'ui/add_model_sheet.dart';
+import 'ui/app_logo.dart';
 import 'ui/chat_screen.dart';
 import 'ui/models_screen.dart';
 import 'ui/theme.dart';
@@ -24,6 +27,10 @@ import 'ui/theme_controller.dart';
 ///
 /// This is a URL, not a secret. Never put an AWS key behind --dart-define:
 /// those values sit in the compiled binary in plain text.
+///
+/// Until that API is reachable -- it is behind Cognito, which the app does not
+/// speak yet -- models are added by pasting a pre-signed link. See
+/// `scripts/presign-model.mjs` and [ManualModelStore].
 const _apiBase = String.fromEnvironment(
   'ENLIBRA_API',
   defaultValue: 'https://api.example.com/v1/',
@@ -35,12 +42,14 @@ Future<void> main() async {
   await StoragePaths.init();
   final database = await AppDatabase.open();
   final theme = await ThemeController.load();
+  final manualModels = await ManualModelStore.load();
 
   runApp(
     EnlibraApp(
       repository: ChatRepository(database.db),
       device: DeviceCapabilities.detect(),
       theme: theme,
+      manualModels: manualModels,
     ),
   );
 }
@@ -51,11 +60,13 @@ class EnlibraApp extends StatelessWidget {
     required this.repository,
     required this.device,
     required this.theme,
+    required this.manualModels,
   });
 
   final ChatRepository repository;
   final DeviceCapabilities device;
   final ThemeController theme;
+  final ManualModelStore manualModels;
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +81,12 @@ class EnlibraApp extends StatelessWidget {
         theme: AppTheme.light(),
         darkTheme: AppTheme.dark(),
         themeMode: theme.mode,
-        home: HomePage(repository: repository, device: device, theme: theme),
+        home: HomePage(
+          repository: repository,
+          device: device,
+          theme: theme,
+          manualModels: manualModels,
+        ),
       ),
     );
   }
@@ -82,11 +98,13 @@ class HomePage extends StatefulWidget {
     required this.repository,
     required this.device,
     required this.theme,
+    required this.manualModels,
   });
 
   final ChatRepository repository;
   final DeviceCapabilities device;
   final ThemeController theme;
+  final ManualModelStore manualModels;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -103,8 +121,15 @@ class _HomePageState extends State<HomePage> {
       ? FakeLlamaEngine()
       : LlamaFfiEngine();
 
-  late final ManifestSource _source = BackendManifestSource(
-    baseUrl: Uri.parse(_apiBase),
+  late final ManualModelSource _manual = ManualModelSource(widget.manualModels);
+
+  /// Pasted-in models first, then whatever the backend offers. The backend is
+  /// not reachable without a login, so in practice the first list is the one
+  /// that has anything in it -- but the catalog path stays wired up so it
+  /// starts working the moment authentication lands, with no change here.
+  late final ManifestSource _source = CompositeManifestSource(
+    manual: _manual,
+    remote: BackendManifestSource(baseUrl: Uri.parse(_apiBase)),
   );
   late final ModelDownloader _downloader = ModelDownloader(source: _source);
 
@@ -124,6 +149,25 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       if (mounted) setState(() => _error = e);
     }
+  }
+
+  Future<void> _addModel() async {
+    final manifest = await AddModelSheet.show(
+      context,
+      device: widget.device,
+      existingIds: widget.manualModels.models.map((m) => m.id).toSet(),
+    );
+    if (manifest == null) return;
+    await widget.manualModels.upsert(manifest);
+    await _loadCatalog();
+  }
+
+  Future<void> _removeModel(ModelManifest manifest) async {
+    await widget.manualModels.remove(manifest.id);
+    // The weights are the expensive thing on a phone's storage, so removing a
+    // model removes the files too rather than just forgetting the link.
+    await StoragePaths.instance.deleteModel(manifest.id);
+    await _loadCatalog();
   }
 
   Future<void> _startChat(ModelManifest manifest, int contextLength) async {
@@ -214,7 +258,24 @@ class _HomePageState extends State<HomePage> {
 
     final catalog = _catalog;
     if (catalog == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      // Branded rather than a bare spinner: this frame is the first thing
+      // after the launcher icon, and the catalog read can take a moment.
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppMark(height: 56),
+              SizedBox(height: 28),
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     return ModelsScreen(
@@ -223,6 +284,9 @@ class _HomePageState extends State<HomePage> {
       device: widget.device,
       onReady: _startChat,
       themeController: widget.theme,
+      onAddModel: _addModel,
+      onRemoveModel: _removeModel,
+      manualIds: widget.manualModels.models.map((m) => m.id).toSet(),
       allowWithoutDownload: _useFakeEngine,
     );
   }
