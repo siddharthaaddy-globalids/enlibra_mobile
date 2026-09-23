@@ -180,17 +180,26 @@ class _AddModelSheetState extends State<AddModelSheet> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final media = MediaQuery.of(context);
 
     return Padding(
       // Keeps the sheet above the keyboard while a long URL is being pasted.
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
       child: SingleChildScrollView(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: AppTheme.maxContentWidth),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+            // `useSafeArea` on a modal sheet wraps it in `SafeArea(bottom:
+            // false)` -- deliberately, so a sheet can paint to the bottom edge
+            // -- which leaves the gesture bar or navigation buttons sitting on
+            // top of whatever is last in the column. That is the action row
+            // here, so the inset is added back by hand.
+            //
+            // Summed with the keyboard inset rather than chosen between:
+            // `padding.bottom` drops to zero while the keyboard is up, since
+            // the keyboard already covers the navigation bar, so exactly one
+            // of the two is ever non-zero.
+            padding: EdgeInsets.fromLTRB(20, 14, 20, 24 + media.padding.bottom),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,

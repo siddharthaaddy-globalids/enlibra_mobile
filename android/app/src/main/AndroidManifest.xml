@@ -1,6 +1,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter's template declares INTERNET only in the debug and profile
+         manifests, where it exists for the tool's own hot-reload channel. A
+         release build merges neither, so without this line the shipped app has
+         no network access at all: every lookup fails with "No address
+         associated with hostname" (errno 7), which reads like a DNS problem
+         and is not one.
+
+         This app downloads its model over HTTPS. It cannot do anything at all
+         without this. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
-        android:label="enlibra_mobile"
+        android:label="Enlibra"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
