@@ -15,12 +15,13 @@ Pod::Spec.new do |s|
   #
   # Build it once with:
   #   packages/llama_bridge/tool/build_apple_frameworks.sh
-  s.source_files     = '../src/llama_bridge.cpp', '../src/llama_bridge.h'
-  s.public_header_files = '../src/llama_bridge.h'
+  s.source_files     = 'Classes/**/*'
+  s.public_header_files = 'Classes/llama_bridge.h'
   s.vendored_frameworks = 'Frameworks/llama.xcframework'
 
   s.dependency 'Flutter'
-  s.platform = :ios, '14.0'
+  # Matches IOS_MIN_OS_VERSION in llama.cpp's build-xcframework.sh.
+  s.platform = :ios, '16.4'
   s.libraries = 'c++'
 
   s.pod_target_xcconfig = {

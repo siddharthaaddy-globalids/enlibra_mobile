@@ -86,7 +86,39 @@ Options:
 | `--file <substring>` | only keys containing this, repeatable |
 | `--manifest <path>` | also write a JSON source file (see below) |
 | `--checksum` | stream each object to compute its sha256 |
+| `--accelerate` | sign against the S3 Transfer Acceleration endpoint |
 | `--json` | machine-readable output |
+
+### If the download is slow
+
+The bucket is in `us-east-1`. Pulling from it in, say, India means a ~220ms
+round trip, and a single TCP stream over a link that long is capped by the
+bandwidth-delay product rather than by your bandwidth -- a few MB/s however
+fast the WiFi is. A VPN does not help; it adds a hop to the same ocean crossing.
+
+Three things that do, cheapest first:
+
+1. **Parallel chunks.** The app already splits the download into 4 ranged
+   requests running at once, which is typically worth 3-6x on a route like
+   that. Tune it when measuring:
+   `flutter build apk --dart-define=ENLIBRA_DOWNLOAD_CHUNKS=8`.
+   The cost is that a parallel transfer cannot resume after a failure -- set it
+   to `1` to trade speed back for resumability.
+2. **`--accelerate`.** Routes through the nearest CloudFront edge and over
+   AWS's backbone for the long leg. The bucket owner has to enable Transfer
+   Acceleration first; the script fails loudly rather than handing you a URL
+   signed for an endpoint that rejects it.
+3. **Put the file nearer.** A cross-region copy runs over AWS's own network,
+   not yours, and then the phone is pulling from the same continent:
+   ```powershell
+   aws s3 cp s3://enlibra/.../gguf/<model>-Q4_K_M.gguf `
+             s3://<your-bucket-ap-south-1>/models/<model>-Q4_K_M.gguf `
+             --source-region us-east-1 --region ap-south-1
+   node presign-model.mjs s3://<your-bucket-ap-south-1>/models/<model>-Q4_K_M.gguf
+   ```
+   This is the one that actually removes the problem rather than working
+   around it, and it is worth doing once if the model is going to be
+   downloaded more than a couple of times.
 
 ### What the app does with the URL
 

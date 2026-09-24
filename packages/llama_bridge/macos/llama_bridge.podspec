@@ -15,8 +15,8 @@ Pod::Spec.new do |s|
   #
   # Build it once with:
   #   packages/llama_bridge/tool/build_apple_frameworks.sh
-  s.source_files     = '../src/llama_bridge.cpp', '../src/llama_bridge.h'
-  s.public_header_files = '../src/llama_bridge.h'
+  s.source_files     = 'Classes/**/*'
+  s.public_header_files = 'Classes/llama_bridge.h'
   s.vendored_frameworks = 'Frameworks/llama.xcframework'
 
   s.dependency 'FlutterMacOS'
@@ -30,6 +30,5 @@ Pod::Spec.new do |s|
     # Dart looks up symbols by name in the process image, so the linker
     # must not strip LB_EXPORT functions for being unreferenced by Swift.
     'DEAD_CODE_STRIPPING' => 'NO',
-    '
   }
 end

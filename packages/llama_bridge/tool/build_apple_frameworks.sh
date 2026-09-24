@@ -16,7 +16,9 @@ if [ ! -f "$llama/build-xcframework.sh" ]; then
   exit 1
 fi
 
-(cd "$llama" && ./build-xcframework.sh)
+# visionOS and tvOS slices are skipped: the app does not ship there, and
+# their SDKs are not reliably installed on CI runners.
+(cd "$llama" && ./build-xcframework.sh ios-sim ios-device macos)
 
 for platform in ios macos; do
   dest="$here/../$platform/Frameworks"

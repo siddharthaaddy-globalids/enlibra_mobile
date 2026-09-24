@@ -80,7 +80,7 @@ jobs:
 
   ios:
     name: iOS (signed)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,7 +149,7 @@ jobs:
           - os: windows-latest
             target: windows
             artifact: build/windows/x64/runner/Release
-          - os: macos-14
+          - os: macos-15
             target: macos
             artifact: build/macos/Build/Products/Release
     runs-on: ${{ matrix.os }}

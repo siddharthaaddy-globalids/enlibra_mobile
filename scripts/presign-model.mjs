@@ -78,6 +78,7 @@ function parseArgs(argv) {
     manifest: null,
     checksum: false,
     json: false,
+    accelerate: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -94,6 +95,7 @@ function parseArgs(argv) {
       case "--file": opts.filters.push(next()); break;
       case "--manifest": opts.manifest = next(); break;
       case "--checksum": opts.checksum = true; break;
+      case "--accelerate": opts.accelerate = true; break;
       case "--json": opts.json = true; break;
       case "-h":
       case "--help": usage(); process.exit(0); break;
@@ -123,6 +125,7 @@ function usage() {
     "  --file <substring>   only keys containing this (repeatable)",
     "  --manifest <path>    write a model source file for the app",
     "  --checksum           compute sha256 by streaming each object",
+    "  --accelerate         sign against the S3 Transfer Acceleration endpoint",
     "  --json               machine-readable output",
   ].join("\n"));
 }
@@ -290,6 +293,13 @@ async function main() {
     // back verbatim, and this URL gets copied around by hand.
     responseChecksumValidation: "WHEN_REQUIRED",
     requestChecksumCalculation: "WHEN_REQUIRED",
+    // Routes the transfer through the nearest CloudFront edge and over AWS's
+    // own backbone for the long leg, instead of the public internet end to
+    // end. Worth a lot when the client and the bucket are on different
+    // continents -- and nothing at all when they are not. The bucket owner
+    // has to have enabled it; a URL signed for an endpoint that is not
+    // accelerated fails rather than falling back.
+    useAccelerateEndpoint: opts.accelerate,
   });
 
   // A key ending in `/`, or with no extension, is a prefix to list. Anything
@@ -302,6 +312,20 @@ async function main() {
     try {
       objects = await listObjects(s3, bucket, key);
     } catch (err) {
+      // Acceleration is a bucket setting its owner has to turn on. When it is
+      // off, the accelerate endpoint rejects the request outright -- and a URL
+      // signed against an endpoint that rejects it is worse than a slow one,
+      // so this is fatal rather than a warning.
+      if (opts.accelerate && !isDenied(err)) {
+        fail(
+          "the S3 Transfer Acceleration endpoint rejected this request (" +
+            (err.name ?? "unknown error") +
+            ").\n" +
+            "  Acceleration has to be enabled on the bucket by its owner. A URL\n" +
+            "  signed against that endpoint will not work until it is, so\n" +
+            "  re-run without --accelerate."
+        );
+      }
       if (!isDenied(err)) throw err;
       // Signing itself needs no permission -- it is an HMAC over the request,
       // computed locally. Only the *discovery* of what is in the prefix needs
@@ -322,6 +346,20 @@ async function main() {
       const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       size = head.ContentLength ?? 0;
     } catch (err) {
+      // Acceleration is a bucket setting its owner has to turn on. When it is
+      // off, the accelerate endpoint rejects the request outright -- and a URL
+      // signed against an endpoint that rejects everything is worse than a
+      // slow one, so this is fatal rather than a warning.
+      if (opts.accelerate && !isDenied(err)) {
+        fail(
+          "the S3 Transfer Acceleration endpoint rejected this request (" +
+            (err.name ?? "unknown error") +
+            ").\n" +
+            "  Acceleration has to be enabled on the bucket by its owner. A\n" +
+            "  URL signed against that endpoint will not work until it is, so\n" +
+            "  re-run without --accelerate."
+        );
+      }
       if (!isDenied(err)) throw err;
       // s3:GetObject is what grants HeadObject, so a 403 here all but
       // guarantees the signed URL will be refused the same way. The URL is

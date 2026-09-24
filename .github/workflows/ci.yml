@@ -151,7 +151,7 @@ jobs:
 
   ios:
     name: Build iOS
-    runs-on: macos-14
+    runs-on: macos-15
     needs: [analyze, native]
     # Skipped on PRs from forks, which cannot access secrets and would
     # burn expensive macOS minutes for no signed output.
@@ -180,7 +180,7 @@ jobs:
         id: xcframework
         with:
           path: packages/llama_bridge/*/Frameworks
-          key: xcframework-${{ steps.llama.outputs.sha }}
+          key: xcframework-${{ steps.llama.outputs.sha }}-${{ hashFiles('packages/llama_bridge/tool/build_apple_frameworks.sh') }}
 
       - name: Build xcframework
         if: steps.xcframework.outputs.cache-hit != 'true'
@@ -205,7 +205,7 @@ jobs:
         include:
           - os: windows-latest
             target: windows
-          - os: macos-14
+          - os: macos-15
             target: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -229,7 +229,7 @@ jobs:
         id: xcframework
         with:
           path: packages/llama_bridge/*/Frameworks
-          key: xcframework-${{ steps.llama.outputs.sha }}
+          key: xcframework-${{ steps.llama.outputs.sha }}-${{ hashFiles('packages/llama_bridge/tool/build_apple_frameworks.sh') }}
 
       - name: Build xcframework
         if: matrix.target == 'macos' && steps.xcframework.outputs.cache-hit != 'true'

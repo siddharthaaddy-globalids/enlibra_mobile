@@ -22,6 +22,28 @@ class BackgroundTransfer {
   /// mix them with anything else the app might transfer later.
   static const group = 'enlibra-models';
 
+  /// How many ranged requests to run at once.
+  ///
+  /// A single TCP stream over a long round trip is limited by the
+  /// bandwidth-delay product rather than by the link, which is why a phone in
+  /// India pulling from `us-east-1` sees a few MB/s however fast its WiFi is.
+  /// Several streams multiply the effective window, and on that shape of route
+  /// it is typically worth 3-6x.
+  ///
+  /// The cost is real and worth stating: **a parallel task cannot be resumed
+  /// after a failure.** A sequential download that dies at 80% picks up at 80%;
+  /// a parallel one starts over. The trade lands in favour of parallel here
+  /// only because it shrinks the window in which something can go wrong --
+  /// seven minutes of exposure instead of forty. Set this to 1 to get
+  /// resumability back.
+  ///
+  /// Tunable without a code change, for measuring on a real connection:
+  ///   flutter build apk --dart-define=ENLIBRA_DOWNLOAD_CHUNKS=8
+  static const chunks = int.fromEnvironment(
+    'ENLIBRA_DOWNLOAD_CHUNKS',
+    defaultValue: 4,
+  );
+
   /// Configures notifications and reattaches to anything still running.
   ///
   /// Called once at startup, and importantly *before* anything listens for
@@ -89,22 +111,40 @@ class BackgroundTransfer {
   }) {
     final controller = StreamController<int>();
 
-    // `urlQueryParameters` is left null deliberately: the package appends
-    // those to the URL, and this URL's query *is* an AWS signature. It has to
-    // travel through byte for byte.
-    final task = DownloadTask(
-      url: url.toString(),
-      filename: fileName,
-      directory: directory,
-      baseDirectory: BaseDirectory.applicationSupport,
-      group: group,
-      updates: Updates.statusAndProgress,
-      // Lets the platform suspend and resume rather than restart, which on a
-      // file this size is the whole game.
-      allowPause: true,
-      retries: 3,
-      displayName: displayName,
-    );
+    // `urlQueryParameters` is left null deliberately in both branches: the
+    // package appends those to the URL, and this URL's query *is* an AWS
+    // signature. It has to travel through byte for byte.
+    //
+    // Every chunk reuses the same pre-signed URL, which is fine -- the
+    // signature covers the object and the method, not the byte range, so S3
+    // serves each `Range` request against it happily.
+    final DownloadTask task = chunks > 1
+        ? ParallelDownloadTask(
+            url: url.toString(),
+            chunks: chunks,
+            filename: fileName,
+            directory: directory,
+            baseDirectory: BaseDirectory.applicationSupport,
+            group: group,
+            updates: Updates.statusAndProgress,
+            // Retries matter more here than for a sequential task: this is the
+            // only recovery a parallel download has, since it cannot resume.
+            retries: 5,
+            displayName: displayName,
+          )
+        : DownloadTask(
+            url: url.toString(),
+            filename: fileName,
+            directory: directory,
+            baseDirectory: BaseDirectory.applicationSupport,
+            group: group,
+            updates: Updates.statusAndProgress,
+            // Lets the platform suspend and resume rather than restart, which
+            // on a file this size is the whole game.
+            allowPause: true,
+            retries: 3,
+            displayName: displayName,
+          );
     _task = task;
 
     FileDownloader()

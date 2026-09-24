@@ -7,7 +7,13 @@
 #include <string>
 #include <vector>
 
+// Apple platforms get llama.cpp as llama.framework, whose headers are only
+// reachable through the framework prefix.
+#if defined(__APPLE__) && __has_include(<llama/llama.h>)
+#include <llama/llama.h>
+#else
 #include "llama.h"
+#endif
 
 namespace {
 
