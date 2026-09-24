@@ -31,6 +31,10 @@ Pod::Spec.new do |s|
     # Dart looks up symbols by name in the process image, so the linker
     # must not strip LB_EXPORT functions for being unreferenced by Swift.
     'DEAD_CODE_STRIPPING' => 'NO',
+    # use_frameworks! builds this pod as its own dylib, which must link
+    # llama.framework itself; CocoaPods does not add it for a vendored
+    # xcframework here, leaving every llama_* symbol undefined.
+    'OTHER_LDFLAGS' => '$(inherited) -framework llama',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
   }
 end

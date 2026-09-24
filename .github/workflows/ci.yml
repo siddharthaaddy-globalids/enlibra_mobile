@@ -176,7 +176,7 @@ jobs:
         id: llama
         run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: xcframework
         with:
           path: packages/llama_bridge/*/Frameworks
@@ -186,6 +186,14 @@ jobs:
         if: steps.xcframework.outputs.cache-hit != 'true'
         run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
+
+      # Saved here rather than in a post-job step: a Flutter build failure
+      # afterwards would otherwise discard 10+ minutes of compilation.
+      - uses: actions/cache/save@v4
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: ${{ steps.xcframework.outputs.cache-primary-key }}
 
       - run: flutter pub get
 
@@ -224,7 +232,7 @@ jobs:
         id: llama
         run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         if: matrix.target == 'macos'
         id: xcframework
         with:
@@ -235,6 +243,14 @@ jobs:
         if: matrix.target == 'macos' && steps.xcframework.outputs.cache-hit != 'true'
         run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
+
+      # Saved here rather than in a post-job step: a Flutter build failure
+      # afterwards would otherwise discard 10+ minutes of compilation.
+      - uses: actions/cache/save@v4
+        if: matrix.target == 'macos' && steps.xcframework.outputs.cache-hit != 'true'
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: ${{ steps.xcframework.outputs.cache-primary-key }}
 
       - run: flutter pub get
 

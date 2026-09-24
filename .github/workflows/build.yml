@@ -178,7 +178,7 @@ jobs:
         id: llama
         run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: xcframework
         with:
           path: packages/llama_bridge/*/Frameworks
@@ -187,6 +187,14 @@ jobs:
       - name: Build xcframework
         if: steps.xcframework.outputs.cache-hit != 'true'
         run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
+
+      # Saved here rather than in a post-job step: a Flutter build failure
+      # afterwards would otherwise discard 10+ minutes of compilation.
+      - uses: actions/cache/save@v4
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: ${{ steps.xcframework.outputs.cache-primary-key }}
 
       - run: flutter pub get
 
@@ -242,7 +250,7 @@ jobs:
         id: llama
         run: echo "sha=$(git -C third_party/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: xcframework
         with:
           path: packages/llama_bridge/*/Frameworks
@@ -251,6 +259,14 @@ jobs:
       - name: Build xcframework
         if: steps.xcframework.outputs.cache-hit != 'true'
         run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
+
+      # Saved here rather than in a post-job step: a Flutter build failure
+      # afterwards would otherwise discard 10+ minutes of compilation.
+      - uses: actions/cache/save@v4
+        if: steps.xcframework.outputs.cache-hit != 'true'
+        with:
+          path: packages/llama_bridge/*/Frameworks
+          key: ${{ steps.xcframework.outputs.cache-primary-key }}
 
       - run: flutter pub get
 
@@ -262,6 +278,22 @@ jobs:
         run: >
           flutter build ios --${{ inputs.build_mode }} --no-codesign
           ${{ inputs.fake_engine && '--dart-define=USE_FAKE_ENGINE=true' || '' }}
+
+      # Only on failure: shows whether llama.framework actually exports the
+      # llama_* API and what the bridge pod was told to link against.
+      - name: Diagnose native link
+        if: failure()
+        run: |
+          set +e
+          fw=packages/llama_bridge/ios/Frameworks/llama.xcframework
+          ls "$fw"
+          for bin in "$fw"/*/llama.framework/llama; do
+            echo "== $bin"; lipo -info "$bin"
+            echo "exported llama_* symbols: $(nm -gU "$bin" | grep -c ' _llama_')"
+          done
+          for x in ios/Pods/Target\ Support\ Files/llama_bridge/*.xcconfig; do
+            echo "== $x"; grep -E 'OTHER_LDFLAGS|FRAMEWORK_SEARCH_PATHS' "$x"
+          done
 
       - name: Package unsigned IPA
         id: stage
