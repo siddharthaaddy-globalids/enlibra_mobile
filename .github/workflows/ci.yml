@@ -184,7 +184,7 @@ jobs:
 
       - name: Build xcframework
         if: steps.xcframework.outputs.cache-hit != 'true'
-        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
 
       - run: flutter pub get
@@ -233,7 +233,7 @@ jobs:
 
       - name: Build xcframework
         if: matrix.target == 'macos' && steps.xcframework.outputs.cache-hit != 'true'
-        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
 
       - run: flutter pub get

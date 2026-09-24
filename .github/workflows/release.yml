@@ -121,7 +121,7 @@ jobs:
           cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Build llama.cpp xcframework
-        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
 
       - run: flutter pub get
@@ -166,7 +166,7 @@ jobs:
 
       - name: Build llama.cpp xcframework
         if: matrix.target == 'macos'
-        run: packages/llama_bridge/tool/build_apple_frameworks.sh
+        run: bash packages/llama_bridge/tool/build_apple_frameworks.sh
         timeout-minutes: 45
 
       - run: flutter pub get
