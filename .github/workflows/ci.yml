@@ -151,7 +151,7 @@ jobs:
 
   ios:
     name: Build iOS
-    runs-on: macos-15
+    runs-on: macos-26
     needs: [analyze, native]
     # Skipped on PRs from forks, which cannot access secrets and would
     # burn expensive macOS minutes for no signed output.
@@ -205,7 +205,7 @@ jobs:
         include:
           - os: windows-latest
             target: windows
-          - os: macos-15
+          - os: macos-26
             target: macos
     runs-on: ${{ matrix.os }}
     steps:
